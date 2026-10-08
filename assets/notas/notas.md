@@ -1,0 +1,3 @@
+- rejís por una tarea
+- Corregir: no era 'rejís por una tarea'
+- Añadir funcionalidad: buscar en Brave

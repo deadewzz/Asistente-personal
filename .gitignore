@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Build de PyInstaller
+build/
+dist/
+
+# Variables de entorno / secretos
+.env
+
+# Configuración sensible (puede contener la API key)
+config/config_usuario.json
+
+# Archivos temporales
+assets/temp/*
+!assets/temp/.gitkeep
+
+# IDE
+.vscode/
+.idea/
