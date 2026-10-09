@@ -44,8 +44,35 @@ buscar en la web y mucho más.
 - **Crear documentos** (`.txt`, `.md`, `.csv`, `.docx`, `.pdf`).
 
 ### 📧 Correo y reuniones
-- Leer correos de **Outlook** y crear borradores.
-- **Grabar reuniones** (audio del sistema) y generar un resumen al terminar.
+- **Leer y resumir el correo de Outlook**: lista los correos numerados (remitente,
+  hora, asunto, extracto y marca de no leído) y los clasifica por urgencia.
+- **Buscar correos** por asunto, remitente o contenido, y **leer uno completo**.
+- **Sacar pendientes**: extrae de los correos las tareas, responsables y fechas.
+- **Responder**: prepara la respuesta (con el correo citado debajo) y la deja en
+  **Borradores**; solo se envía si se lo pides explícitamente.
+- **Etiquetar** (categorías de Outlook), **archivar** en una carpeta, **marcar**
+  leído/no leído y **eliminar** (a Elementos eliminados).
+- **Grabar reuniones** (audio del sistema) y generar el **acta** al terminar:
+  objetivo, puntos tratados, acuerdos, tareas con responsable y fecha, riesgos y
+  próxima reunión, con el título, la fecha, la duración y los asistentes de la
+  reunión del calendario (si Jarvis puede leerlo).
+- **Actas guardadas**: pídele «mis reuniones» para verlas numeradas, «lee el acta
+  de la reunión 2» para que te la resuma y «rehaz el acta» para regenerarla desde
+  la transcripción.
+- **Mandar el acta**: «envía el acta a los asistentes» deja el correo en
+  **Borradores** (con el acta dentro) y solo lo envía si dices «envíalo».
+- **Preparar la próxima reunión**: «prepara la agenda de mi próxima reunión» lee
+  el calendario de Outlook y redacta la agenda.
+
+Todo el correo funciona con el **Outlook de escritorio** que ya tienes
+configurado (COM): no hace falta ninguna credencial ni registrar aplicaciones.
+Si Outlook no está abierto o está sin conectar, Jarvis te lo dice y no hace nada.
+
+### ☁️ Matriz en la nube
+- **Llenar una matriz** en **Excel (OneDrive/SharePoint)** y en **Azure DevOps** de una
+  sola vez, a partir de los datos copiados en el portapapeles.
+- El **Excel** se sube solo si está en una carpeta sincronizada (sin API key) y en
+  **Azure DevOps** se crean **work items** con un PAT personal.
 
 ### 📊 Oficina y preventa
 - **Generar presentaciones** de PowerPoint a partir de un archivo `.md`, respetando la
@@ -119,6 +146,51 @@ pip install -r requirements.txt
    }
    ```
 
+3. (Opcional) **Matriz en la nube** (Excel + Azure DevOps). Lo más fácil es usar los
+   botones **«Excel (archivo o URL)»** y **«Configurar Azure DevOps»** de la pestaña
+   *Ajustes*: cada uno abre su propio diálogo y guarda solo esa parte (el botón
+   *Guardar configuración* no toca esta sección). En el diálogo del Excel puedes pegar el
+   enlace del documento de SharePoint y, si quieres que los cambios se suban solos a la
+   nube, indicar la **carpeta sincronizada** de esa biblioteca (*Sincronizar* en
+   SharePoint). También puedes escribir estas claves a mano en `config_usuario.json`:
+   ```json
+   {
+       "matriz": {
+           "excel_path": "C:/Users/tu_usuario/OneDrive - Empresa/Matriz_Requerimientos.xlsx",
+           "hoja": "Matriz",
+           "columnas": ["ID", "Requisito", "Tipo", "Prioridad", "Estado", "Responsable", "Observaciones"]
+       },
+       "azure_devops": {
+           "org": "https://dev.azure.com/MiOrganizacion",
+           "project": "MiProyecto",
+           "pat": "",
+           "tipo_item": "Requirement"
+       }
+   }
+   ```
+   - **Excel (OneDrive/SharePoint):** hay tres formas de indicarlo:
+     - `excel_path`: ruta completa de un archivo dentro de una carpeta sincronizada con
+       OneDrive/SharePoint → se sube a la nube automáticamente.
+     - `excel_url`: enlace (URL) del Excel publicado. Se descarga una copia local a
+       `matrices/` y ahí se van acumulando las filas; el botón *Descargar URL ahora* del
+       diálogo trae la última versión de la nube. **Ojo:** con URL sola los cambios se
+       quedan en la copia local y **NO** llegan a SharePoint.
+     - `excel_url` + `excel_sync_dir`: además indicas la carpeta sincronizada de esa
+       biblioteca de SharePoint (*Excel → Sincronizar* en SharePoint copia la carpeta al
+       equipo). La copia se baja y se edita *dentro* de esa carpeta con el mismo nombre
+       que el documento remoto, así que OneDrive sube los cambios al Excel de SharePoint
+       solo, sin credenciales de ningún tipo.
+
+     **No hace falta ninguna API key.**
+   - **Azure DevOps:** configúralo con el botón **«Configurar Azure DevOps»** (incluye
+     *Probar conexión*) o a mano: genera un **PAT** (Personal Access Token) en
+     `https://dev.azure.com/<tu-organizacion>/_usersSettings/tokens` con permiso
+     *Work Items (Read & Write)* y pégalo en `azure_devops.pat` o en la variable de
+     entorno `AZURE_DEVOPS_PAT`. **No necesitas un API key de administrador.**
+   - Uso: copia los datos (columnas separadas por tabulador, `;` o `,`) y pide
+     «llena la matriz de la nube». También puedes usar `[ACCION: MATRIZ_EXCEL]` o
+     `[ACCION: MATRIZ_AZURE]` para un solo destino.
+
 > ⚠️ El archivo `.env` y `config/config_usuario.json` están en `.gitignore` porque
 > pueden contener tu clave de API. **Nunca** los subas al repositorio.
 
@@ -141,7 +213,21 @@ python main.py
   | «Haz una presentación con presentacion.md» | `[ACCION: CREAR_PRESENTACION|presentacion.md]` |
   | «Resume lo que tengo copiado» | `[ACCION: RESUMIR_PORTAPAPELES]` |
   | «Lee mis últimos correos» | `[ACCION: LEER_CORREOS|5]` |
+  | «Resume el correo de hoy» | `[ACCION: RESUMEN_CORREOS|hoy]` |
+  | «Saca los pendientes del correo» | `[ACCION: CORREO_PENDIENTES|10]` |
+  | «Respóndele al 2 que sigo pendiente» | `[ACCION: RESPONDER_CORREO|2;;texto de la respuesta]` |
+  | «Envía ese correo» | `[ACCION: ENVIAR_BORRADOR]` |
+  | «Archiva el 3 en Proyectos» | `[ACCION: ARCHIVAR_CORREO|3;;Proyectos]` |
   | «Graba la reunión» | `[ACCION: GRABAR_REUNION]` |
+  | «Termina la reunión» | `[ACCION: TERMINAR_REUNION]` |
+  | «¿Qué reuniones tengo guardadas?» | `[ACCION: REUNIONES|8]` |
+  | «Lee el acta de la reunión 1» | `[ACCION: LEER_ACTA|1]` |
+  | «Rehaz el acta de ayer» | `[ACCION: REHACER_ACTA|2026-10-07]` |
+  | «¿Quiénes asistieron a la reunión?» | `[ACCION: ASISTENTES_REUNION]` |
+  | «Envía el acta a los asistentes» | `[ACCION: ENVIAR_ACTA]` |
+  | «Manda el acta del 2 a ana@empresa.com» | `[ACCION: ENVIAR_ACTA|ana@empresa.com;;2;;enviar]` |
+  | «Prepara la agenda de mi próxima reunión» | `[ACCION: AGENDA_REUNION]` |
+  | «Llena la matriz de la nube» | `[ACCION: MATRIZ_NUBE]` |
 
 ---
 
@@ -162,8 +248,10 @@ Asistente/
 │   ├── productivity.py     # Notas, portapapeles, pomodoro, perfiles, documentos
 │   ├── office_automation.py# PowerPoint y presentaciones desde plantilla
 │   ├── outlook_tools.py    # Correo de Outlook
-│   ├── meeting_assistant.py# Grabación y resumen de reuniones
+│   ├── calendario_tools.py # Calendario de Outlook (reunión en curso, próximas, invitados)
+│   ├── meeting_assistant.py# Grabación, transcripción y acta de reuniones
 │   ├── preventa_tools.py   # Documentos de preventa
+│   ├── cloud_matrix.py     # Matriz en la nube (Excel + Azure DevOps)
 │   ├── dev_tools.py        # Commits de Git y comandos de terminal
 │   ├── ocr_engine.py       # OCR (Tesseract / RapidOCR)
 │   └── rutas.py            # Rutas centralizadas de la carpeta de Jarvis
@@ -184,7 +272,9 @@ variable de entorno `JARVIS_HOME`.
 Jarvis/
 ├── config/           # config_usuario.json y reglas.md (memoria del asistente)
 ├── conversaciones/   # Historiales de chat (.md)
-├── notas/            # Notas rápidas y resúmenes de reuniones (.md)
+├── notas/            # Notas rápidas (.md)
+├── reuniones/        # Actas de reunión por mes (.md), con transcripción
+├── matrices/         # Matrices (.xlsx) para subir a la nube (OneDrive/SharePoint)
 ├── documentos/       # Documentos creados (.txt, .md, .csv, .docx, .pdf)
 ├── adjuntos/         # Imágenes y textos pegados o adjuntos
 ├── presentaciones/   # Fuentes .md para generar PowerPoint
@@ -219,4 +309,6 @@ El ejecutable resultante se genera en `dist/`.
 - Las dependencias opcionales (Whisper, OCR, RVC, Outlook) degradan con elegancia si
   no están instaladas.
 - Proyecto personal en evolución; algunas funciones están en fase de pruebas.
+- El **plan de funciones pendientes** (estado, módulo y dependencias de cada una)
+  está en [`ROADMAP.md`](ROADMAP.md).
 

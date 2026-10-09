@@ -1,6 +1,13 @@
 import os
 import sys
 import json
+
+# Silencia el aviso de huggingface_hub sobre los enlaces simbólicos en Windows.
+# Debe fijarse ANTES de importar módulos que cargan Whisper (voice_engine /
+# meeting_assistant) para que el aviso no aparezca en el arranque. La caché de
+# los modelos funciona igual; solo ocupa algo más de disco sin enlaces simbólicos.
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
 from app_gui import AppGUI
 from modules.voice_output import VoiceOutput
 from modules import rutas

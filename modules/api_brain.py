@@ -1,11 +1,22 @@
 import json
 import os
+import re
 from openai import OpenAI
 
 from modules import rutas
 
 class APIBrain:
     MAX_MENSAJES_HISTORIAL = 30  # evita superar el límite de contexto de DeepSeek
+    # Marca de un comando interno de acción ('[ACCION: ...]') dentro de la respuesta.
+    RE_MARCA_ACCION = re.compile(r"\[\s*ACCION\s*:\s*", re.IGNORECASE)
+    # Adornos que pueden envolver al comando (backticks, paréntesis, punto final,
+    # corchetes y espacios); sirven para saber si el comando cierra el mensaje y
+    # para limpiar lo que queda al retirarlo del texto visible.
+    RE_ADORNOS_CIERRE = re.compile(r"[\s`.)\]]*")
+    ADORNOS_APERTURA = " \t`*->#"
+    # Cerca de un bloque de código Markdown (```), donde un comando solo puede ser
+    # parte de una explicación: ahí no se ejecuta nada salvo que cierre el mensaje.
+    RE_CERCA_CODIGO = re.compile(r"^\s*```")
     # Reglas permanentes del usuario: se inyectan en el prompt en cada consulta
     RUTA_REGLAS = rutas.REGLAS
 
@@ -83,13 +94,30 @@ class APIBrain:
                     "- Iniciar pomodoro: [ACCION: POMODORO|25] / detener: [ACCION: DETENER_POMODORO]\n"
                     "- Perfil de entorno: [ACCION: PERFIL|desarrollo] / [ACCION: PERFIL|oficina] / [ACCION: PERFIL|cierre]\n"
                     "- Buscar archivos: [ACCION: BUSCAR_ARCHIVOS|nombre]\n"
-                    "- Leer correos de Outlook: [ACCION: LEER_CORREOS|5]\n"
+                    "- Leer correos de Outlook: [ACCION: LEER_CORREOS|5] (los numera para que luego puedas responder o mover el que el usuario diga)\n"
                     "- Crear borrador de correo: [ACCION: CREAR_BORRADOR|correo;;asunto;;cuerpo]\n"
+                    "- Resumen del correo (criterio opcional: 'hoy', 'no leídos', un número): [ACCION: RESUMEN_CORREOS|hoy], [ACCION: RESUMEN_CORREOS|no leídos], [ACCION: RESUMEN_CORREOS|10]\n"
+                    "- Sacar pendientes y compromisos del correo: [ACCION: CORREO_PENDIENTES|10]\n"
+                    "- Buscar correos: [ACCION: BUSCAR_CORREOS|factura acme]\n"
+                    "- Leer un correo completo: [ACCION: LEER_CORREO|3] (el 3 es el número de la lista que acabas de mostrar; también vale parte del asunto o del remitente)\n"
+                    "- Responder un correo: [ACCION: RESPONDER_CORREO|3;;texto de la respuesta]. Añade ';;enviar' AL FINAL SOLO si el usuario dice explícitamente que lo mandes ('envíalo', 'mándalo', 'respóndele'); si no, la respuesta queda como BORRADOR: [ACCION: RESPONDER_CORREO|3;;texto de la respuesta;;enviar]\n"
+                    "- Enviar el borrador que dejaste preparado: [ACCION: ENVIAR_BORRADOR] (con asunto o número si hay varios)\n"
+                    "- Etiquetar un correo (categorías de Outlook; con '-' delante las quita): [ACCION: ETIQUETAR_CORREO|3;;Propuesta], [ACCION: ETIQUETAR_CORREO|3;;-Propuesta]\n"
+                    "- Archivar o mover un correo a una carpeta: [ACCION: ARCHIVAR_CORREO|3] (carpeta de archivo) o [ACCION: ARCHIVAR_CORREO|3;;Proyectos]\n"
+                    "- Marcar leído o no leído: [ACCION: MARCAR_CORREO|3], [ACCION: MARCAR_CORREO|3;;no leído]\n"
+                    "- Eliminar un correo (va a Elementos eliminados, se puede recuperar): [ACCION: ELIMINAR_CORREO|3]\n"
                     "- Crear un documento de ARCHIVO en la carpeta de documentos de Jarvis (sirve para .txt, .md, .csv, .docx o .pdf); el nombre puede incluir subcarpeta: [ACCION: CREAR_DOCUMENTO|nombre.txt;;contenido completo del documento]. Usa esto (NO 'NOTA') siempre que el usuario pida crear/guardar un archivo, un .txt, un documento, una receta, etc.\n"
                     "- Activar dictado (escribir lo que dices): [ACCION: DICTADO_ON] / desactivar: [ACCION: DICTADO_OFF]\n"
                     "- Buscar en Brave: [ACCION: BUSCAR|consulta] o con plataforma: [ACCION: BUSCAR|youtube:consulta], [ACCION: BUSCAR|google:consulta], [ACCION: BUSCAR|spotify:consulta]\n"
                     "- Reproducir video en YouTube: [ACCION: REPRODUCIR_VIDEO|consulta] (primer resultado) o [ACCION: REPRODUCIR_VIDEO|consulta::2] (segundo resultado)\n"
-                    "- Grabar reunión: [ACCION: GRABAR_REUNION] / Terminar y resumir: [ACCION: TERMINAR_REUNION]\n"
+                    "- Grabar reunión: [ACCION: GRABAR_REUNION] / Terminar, transcribir y generar el acta: [ACCION: TERMINAR_REUNION]\n"
+                    "- Ver las actas de reunión guardadas: [ACCION: REUNIONES|8]\n"
+                    "- Leer o resumir un acta guardada: [ACCION: LEER_ACTA|1] (el 1 es el número del listado de REUNIONES; también vale parte del título)\n"
+                    "- Rehacer el acta de una reunión a partir de su transcripción: [ACCION: REHACER_ACTA|1]\n"
+                    "- Saber quiénes asistieron a una reunión (del acta o de la invitación del calendario): [ACCION: ASISTENTES_REUNION|1] o [ACCION: ASISTENTES_REUNION]\n"
+                    "- Preparar el correo del acta para los asistentes: [ACCION: ENVIAR_ACTA] (a los asistentes del acta) o [ACCION: ENVIAR_ACTA|ana@empresa.com;luis@empresa.com;;1] (correos separados por ';' y, opcionalmente, el número del acta; si solo hay un número, se entiende que es el acta: [ACCION: ENVIAR_ACTA|2]). Añade ';;enviar' AL FINAL SOLO si el usuario pide explícitamente que lo mandes: [ACCION: ENVIAR_ACTA;;enviar]. Si no hay asistentes conocidos, pide los correos en vez de inventarlos.\n"
+                    "- Agenda previa de las próximas reuniones del calendario: [ACCION: AGENDA_REUNION] o [ACCION: AGENDA_REUNION|3] (próximos 3 días) o [ACCION: AGENDA_REUNION|nombre de la reunión]\n"
+                    "- Llenar la matriz de la nube con los datos copiados en el portapapeles (Excel en OneDrive/SharePoint + Azure DevOps): [ACCION: MATRIZ_NUBE] (solo Excel: [ACCION: MATRIZ_EXCEL]; solo Azure DevOps: [ACCION: MATRIZ_AZURE])\n"
                     "- Crear presentación PowerPoint desde un archivo .md (puedes indicar la ruta y, opcionalmente, un límite de diapositivas): [ACCION: CREAR_PRESENTACION|ruta_del.md] o [ACCION: CREAR_PRESENTACION|ruta_del.md;30]. Si el usuario menciona un .md concreto ('el que acabas de crear', 'usa presentacion_bot_pagos_bancolombia.md', etc.), pasa su ruta o su nombre de archivo; si no indica ninguno, pasa la acción sin parámetro y se usará el .md más reciente de la carpeta presentaciones: [ACCION: CREAR_PRESENTACION]\n"
                     "- Generar documento de preventa (copia los requerimientos al portapapeles primero): [ACCION: GENERAR_PREVENTA|propuesta], [ACCION: GENERAR_PREVENTA|requisitos], [ACCION: GENERAR_PREVENTA|historias], [ACCION: GENERAR_PREVENTA|glosario], [ACCION: GENERAR_PREVENTA|resumen], [ACCION: GENERAR_PREVENTA|estimacion]\n"
                     "- Guardar una regla permanente que el usuario pida recordar siempre (p. ej. 'recuerda que...', 'de ahora en adelante...', 'a partir de ahora...'): [ACCION: RECORDAR_REGLA|texto de la regla]\n"
@@ -97,7 +125,18 @@ class APIBrain:
                     "\n"
                     "Las REGLAS PERMANENTES DEL USUARIO que aparezcan más abajo son instrucciones fijas: cúmplelas en TODAS tus respuestas y acciones (incluida la creación de tareas/Work Items), salvo que el usuario indique explícitamente lo contrario.\n"
                     "\n"
-                    "CUANDO EL USUARIO PIDA ALGO QUE REQUIERA LEER DATOS (resumir portapapeles, explicar error, leer notas/correos, generar commit, buscar archivos, ejecutar terminal), responde SOLO con la acción [ACCION: ...] sin texto adicional."
+                    "CUANDO EL USUARIO PIDA ALGO QUE REQUIERA LEER DATOS (resumir portapapeles, explicar error, leer notas/correos, generar commit, buscar archivos, ejecutar terminal), responde SOLO con la acción [ACCION: ...] sin texto adicional.\n"
+                    "\n"
+                    "EL FORMATO [ACCION: ...] ES INTERNO: sirve para ejecutar una acción de verdad. Escribe el comando "
+                    "únicamente cuando quieras ejecutarla y siempre como última línea del mensaje. Nunca lo incluyas en "
+                    "explicaciones, ejemplos, listas ni bloques de código: si describes lo que puedes hacer, explícalo "
+                    "con palabras (por ejemplo 'puedo abrir Brave, buscar en él y reproducir vídeos') sin escribir el comando.\n"
+                    "\n"
+                    "SEGURIDAD DEL CORREO: no envíes ningún correo (ni con ';;enviar' en RESPONDER_CORREO "
+                    "o ENVIAR_ACTA, ni con ENVIAR_BORRADOR) ni elimines nada (ELIMINAR_CORREO) si el "
+                    "usuario no lo pide de forma explícita en su último mensaje; por defecto prepara el "
+                    "borrador y pregúntale si lo mandas. Si el usuario dice 'el correo 3', se refiere al "
+                    "número 3 del último listado que tú mostraste."
                 )
             }
         ]
@@ -160,21 +199,121 @@ class APIBrain:
                 stream=False
             )
 
-            respuesta_full = response.choices[0].message.content
+            respuesta_full = response.choices[0].message.content or ""
             self.historial.append({"role": "assistant", "content": respuesta_full})
 
-            comando_accion = None
-            respuesta_texto = respuesta_full
-
-            if "[ACCION:" in respuesta_full:
-                partes = respuesta_full.split("[ACCION:")
-                respuesta_texto = partes[0].strip()
-                comando_accion = partes[1].split("]")[0].strip()
-
-            return respuesta_texto, comando_accion
+            # El comando de acción se separa solo si CIERRA el mensaje: antes se
+            # cortaba el texto en la primera aparición de '[ACCION:', de modo que una
+            # respuesta que mencionaba el formato aparecía truncada a media frase.
+            return self._extraer_accion(respuesta_full)
 
         except Exception as e:
             return f"Error de conexión: {str(e)}", None
+
+    def _extraer_accion(self, respuesta):
+        """Separa el comando de acción del texto que se muestra en el chat.
+
+        El prompt pide al modelo añadir el comando exacto AL FINAL del mensaje, así
+        que se interpreta como orden el último comando que CIERRA la respuesta o, si
+        el modelo añadió algo después, el último que ocupa una línea completa. Una
+        mención dentro de una frase (una explicación o un ejemplo) es texto normal:
+        no se ejecuta y, sobre todo, NO recorta el mensaje.
+
+        Devuelve (texto_visible, comando); el comando es None si el mensaje no lleva
+        ninguna orden.
+        """
+        texto = respuesta or ""
+        candidatos = []
+        for marca in self.RE_MARCA_ACCION.finditer(texto):
+            cuerpo = self._cuerpo_comando(texto, marca.end())
+            if not cuerpo:
+                continue
+            comando, fin = cuerpo
+            if not comando:
+                continue
+            candidatos.append((marca.start(), fin, comando,
+                               self._cierra_mensaje(texto, fin),
+                               self._linea_propia(texto, marca.start(), fin)
+                               and not self._dentro_de_bloque(texto, marca.start())))
+
+        elegido = None
+        for candidato in reversed(candidatos):
+            if candidato[3]:
+                elegido = candidato
+                break
+        if elegido is None:
+            for candidato in reversed(candidatos):
+                if candidato[4]:
+                    elegido = candidato
+                    break
+        if elegido is None:
+            return texto, None
+
+        inicio, fin, comando = elegido[0], elegido[1], elegido[2]
+        # Si el modelo envolvió el comando con backticks, se quitan los dos.
+        inicio_visible = inicio - 1 if texto[inicio - 1:inicio] == "`" else inicio
+        fin_visible = fin + 1 if texto[fin:fin + 1] == "`" else fin
+        visible = texto[:inicio_visible] + texto[fin_visible:]
+        # Un bloque de código que solo tenía el comando queda vacío: fuera.
+        visible = re.sub(r"```[^\n]*\n\s*```", "", visible)
+        visible = re.sub(r"\n{3,}", "\n\n", visible).strip()
+        return visible, comando
+
+    @staticmethod
+    def _cuerpo_comando(texto, desde):
+        """Devuelve (comando, fin) del comando que empieza en 'desde'.
+
+        El contenido de la orden puede ser largo y llevar corchetes dentro (p. ej.
+        el Markdown de un documento con '[SUPUESTO]'), así que se toma el último ']'
+        que cierra una línea (el que cierra la orden) y, si no hay ninguno, el
+        último ']' del mensaje.
+        """
+        resto = texto[desde:]
+        if "]" not in resto:
+            return None
+        fin_rel = None
+        for posicion in range(len(resto) - 1, -1, -1):
+            if resto[posicion] == "]" and APIBrain._cierra_linea(texto, desde + posicion):
+                fin_rel = posicion
+                break
+        if fin_rel is None:
+            fin_rel = resto.rfind("]")
+        comando = resto[:fin_rel].strip()
+        return comando, desde + fin_rel + 1
+
+    @staticmethod
+    def _cierra_linea(texto, posicion):
+        """True si tras el ']' de 'posicion' solo hay adornos hasta el fin de línea."""
+        fin_linea = texto.find("\n", posicion + 1)
+        if fin_linea == -1:
+            fin_linea = len(texto)
+        return APIBrain.RE_ADORNOS_CIERRE.fullmatch(
+            texto[posicion + 1:fin_linea]) is not None
+
+    @staticmethod
+    def _cierra_mensaje(texto, fin):
+        """True si después del comando solo quedan adornos y espacios."""
+        return APIBrain.RE_ADORNOS_CIERRE.fullmatch(texto[fin:]) is not None
+
+    @staticmethod
+    def _linea_propia(texto, inicio, fin):
+        """True si el comando ocupa una línea completa (con o sin adornos)."""
+        antes = texto.rfind("\n", 0, inicio) + 1
+        if texto[antes:inicio].strip(APIBrain.ADORNOS_APERTURA):
+            return False
+        fin_linea = texto.find("\n", fin)
+        if fin_linea == -1:
+            fin_linea = len(texto)
+        return APIBrain.RE_ADORNOS_CIERRE.fullmatch(texto[fin:fin_linea]) is not None
+
+    @classmethod
+    def _dentro_de_bloque(cls, texto, posicion):
+        """True si la posición cae dentro de un bloque de código ``` ... ```."""
+        dentro = False
+        for linea in texto[:posicion].split("\n"):
+            if cls.RE_CERCA_CODIGO.match(linea):
+                dentro = not dentro
+        return dentro
 
     def _recortar_historial(self):
         """Mantiene el mensaje de sistema y los últimos mensajes dentro del límite."""

@@ -28,6 +28,7 @@ CONFIG = os.path.join(JARVIS_HOME, "config")                 # Ajustes y memoria
 CONVERSACIONES = os.path.join(JARVIS_HOME, "conversaciones")  # Historiales de chat (.md)
 NOTAS = os.path.join(JARVIS_HOME, "notas")                    # Notas diarias (.md)
 REUNIONES = os.path.join(JARVIS_HOME, "reuniones")            # Resúmenes de reuniones (.md)
+MATRICES = os.path.join(JARVIS_HOME, "matrices")              # Matrices (.xlsx) para la nube
 DOCUMENTOS = os.path.join(JARVIS_HOME, "documentos")         # Documentos de texto (.txt)
 ADJUNTOS = os.path.join(JARVIS_HOME, "adjuntos")             # Imágenes/textos pegados o adjuntos
 PRESENTACIONES = os.path.join(JARVIS_HOME, "presentaciones")  # Fuentes .md para PowerPoint
@@ -41,7 +42,7 @@ CONFIG_USUARIO = os.path.join(CONFIG, "config_usuario.json")
 REGLAS = os.path.join(CONFIG, "reglas.md")
 
 CARPETAS = [
-    CONFIG, CONVERSACIONES, NOTAS, REUNIONES, DOCUMENTOS, ADJUNTOS,
+    CONFIG, CONVERSACIONES, NOTAS, REUNIONES, MATRICES, DOCUMENTOS, ADJUNTOS,
     PRESENTACIONES, PREVENTA, PLANTILLAS, MODELOS, TEMP,
 ]
 

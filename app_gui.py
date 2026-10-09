@@ -14,6 +14,7 @@ from modules.system_actions import SystemActions
 from modules.voice_engine import VoiceEngine
 from modules.voice_output import VoiceOutput
 from modules.ocr_engine import ocr_imagen, motor as ocr_motor
+from modules.cloud_matrix import CloudMatrix, COLUMNAS_DEFECTO
 from modules import rutas
 
 ctk.set_appearance_mode("Dark")
@@ -69,6 +70,7 @@ class AppGUI(ctk.CTk):
         self.chat_activo = None      # None = sin definir, False = bienvenida, True = conversación
         self._procesando = False
         self._ind_pensando = None
+        self._pegado_abajo = True    # True si el usuario está viendo el final del chat
         self.adjuntos = []          # lista de dicts con los archivos adjuntos pendientes
         self._burbujas = []         # registros de las burbujas visibles (para selección)
         self._seleccion = []        # registros de las burbujas seleccionadas
@@ -94,6 +96,7 @@ class AppGUI(ctk.CTk):
         # Asistente de reuniones: alertas por voz + resumen con la IA + monitoreo
         self.system.meeting.on_alerta = self.reproducir_voz
         self.system.meeting.on_resumen = self._resumir_reunion
+        self.system.meeting.on_metadatos = self._metadatos_reunion
         self.system.meeting.iniciar_monitoreo()
 
         # Herramientas de preventa: generación de documentos con la IA
@@ -192,9 +195,11 @@ class AppGUI(ctk.CTk):
             self._mostrar_vista("ajustes")
 
     def _crear_vista_chat(self, parent):
-        # Espaciadores para centrar la bienvenida verticalmente
-        self.spacer_top = ctk.CTkFrame(parent, fg_color="transparent")
-        self.spacer_bottom = ctk.CTkFrame(parent, fg_color="transparent")
+        # Espaciadores para centrar la bienvenida verticalmente. Se les da un alto
+        # mínimo (por defecto un CTkFrame pide 200 px): así el reparto del espacio
+        # sobrante es igual para los dos y el hero queda realmente centrado.
+        self.spacer_top = ctk.CTkFrame(parent, fg_color="transparent", height=1)
+        self.spacer_bottom = ctk.CTkFrame(parent, fg_color="transparent", height=1)
 
         # Hero (pantalla de bienvenida)
         self.hero = ctk.CTkFrame(parent, fg_color="transparent")
@@ -207,6 +212,14 @@ class AppGUI(ctk.CTk):
 
         # Historial de conversación (burbujas)
         self.chat_scroll = ctk.CTkScrollableFrame(parent, fg_color="transparent")
+        # Al cambiar el tamaño de la vista (ventana, barra de selección, maximizar...)
+        # se reancla el final: el <Configure> del lienzo es la señal fiable del cambio
+        # de alto disponible. add="+" conserva el manejador interno de
+        # CTkScrollableFrame (que ajusta el ancho del contenido).
+        self.chat_scroll._parent_canvas.bind("<Configure>", self._chat_redimensionado, add="+")
+        # El lienzo avisa (yscrollcommand) cada vez que se desplaza: así sabemos si
+        # el usuario está viendo el final y podemos reanclarlo al redimensionar.
+        self.chat_scroll._parent_canvas.configure(yscrollcommand=self._scroll_actualizado)
 
         # Barra de entrada (compartida por ambos estados)
         self._crear_barra_input(parent)
@@ -214,13 +227,17 @@ class AppGUI(ctk.CTk):
     def _crear_barra_input(self, parent):
         self.barra_input = ctk.CTkFrame(parent, fg_color="transparent")
 
-        # Fila de chips con los adjuntos pendientes (se rellena dinámicamente)
+        # Fila de chips con los adjuntos pendientes (se rellena dinámicamente).
+        # No se empaqueta aquí a propósito: un CTkFrame sin hijos conserva su alto
+        # por defecto (200 px) y dejaría una banda muerta entre el chat y la caja
+        # de escritura, cortando los mensajes por encima del cuadro de texto.
+        # _actualizar_adjuntos_ui() la muestra solo cuando hay adjuntos.
         self.adjuntos_frame = ctk.CTkFrame(self.barra_input, fg_color="transparent")
-        self.adjuntos_frame.pack(fill="x")
 
         caja = ctk.CTkFrame(self.barra_input, fg_color=COLOR_TARJETA, corner_radius=18,
                             border_width=1, border_color=COLOR_BORDE)
         caja.pack(fill="x")
+        self.caja_input = caja  # referencia para recolocar la fila de chips encima
 
         # Botón para adjuntar archivos (📎)
         self.btn_adjuntar = ctk.CTkButton(
@@ -711,6 +728,15 @@ class AppGUI(ctk.CTk):
     def _actualizar_adjuntos_ui(self):
         for w in self.adjuntos_frame.winfo_children():
             w.destroy()
+        # La fila de chips solo reserva espacio si hay adjuntos: un CTkFrame vacío
+        # mantiene 200 px de alto y cortaría el área visible del chat.
+        if not self.adjuntos:
+            self.adjuntos_frame.pack_forget()
+            return
+        try:
+            self.adjuntos_frame.pack(fill="x", before=self.caja_input)
+        except Exception:
+            self.adjuntos_frame.pack(fill="x")
         for adj in self.adjuntos:
             chip = ctk.CTkFrame(self.adjuntos_frame, fg_color=COLOR_TARJETA,
                                 corner_radius=12, border_width=1, border_color=COLOR_BORDE)
@@ -1031,8 +1057,37 @@ class AppGUI(ctk.CTk):
             canvas.update_idletasks()
             canvas.configure(scrollregion=canvas.bbox("all"))
             canvas.yview_moveto(1.0)
+            self._pegado_abajo = True
         except Exception:
             pass
+
+    def _scroll_actualizado(self, first, last):
+        """Registra si el final del chat está a la vista (lo llama el lienzo).
+
+        Sustituye al yscrollcommand de CTkScrollableFrame conservando su trabajo
+        (mover la barra lateral) y recuerda la posición para reanclar el final
+        cuando cambia el tamaño de la vista."""
+        try:
+            self._pegado_abajo = float(last) >= 0.999
+        except Exception:
+            self._pegado_abajo = True
+        try:
+            self.chat_scroll._scrollbar.set(first, last)
+        except Exception:
+            pass
+
+    def _chat_redimensionado(self, event=None):
+        """Reancla el final de la conversación cuando cambia el tamaño de la vista.
+
+        Sin esto, al encoger o maximizar la ventana el lienzo cambia de alto y los
+        últimos mensajes quedan por debajo del borde visible (el chat parece
+        cortado). Solo se reancla si el usuario estaba viendo el final, para no
+        arrastrar la vista mientras lee mensajes anteriores."""
+        if not self.chat_activo or not self._pegado_abajo:
+            return
+        # En diferido: no conviene reconfigurar el lienzo dentro de su <Configure>
+        # (llegan varios eventos seguidos hasta que la ventana tiene su tamaño final).
+        self.after_idle(self._scroll_final)
 
     def _mostrar_pensando(self, activo):
         self._procesando = activo
@@ -1063,6 +1118,7 @@ class AppGUI(ctk.CTk):
         for w in self.chat_scroll.winfo_children():
             w.destroy()
         self._ind_pensando = None
+        self._pegado_abajo = True    # un hilo nuevo se ve desde el final
         self._procesando = False
         self.chat_activo = None
         self._burbujas = []
@@ -1150,6 +1206,38 @@ class AppGUI(ctk.CTk):
                            "entry_nombre")
         self._campo_config(self.frame_config, "Ruta Modelo RVC (.pth):", "entry_rvc")
 
+        # Matriz en la nube: botones, cada uno con su propio diálogo de configuración
+        ctk.CTkLabel(self.frame_config, text="Matriz en la nube (Excel + Azure DevOps):",
+                     text_color=COLOR_TEXTO, font=("Segoe UI", 12)).pack(
+                         anchor="w", padx=18, pady=(14, 4))
+        frame_nube = ctk.CTkFrame(self.frame_config, fg_color="transparent")
+        frame_nube.pack(fill="x", padx=18, pady=(0, 6))
+        self.btn_cfg_ado = ctk.CTkButton(
+            frame_nube, text="Configurar Azure DevOps",
+            command=self._abrir_config_azure, fg_color=COLOR_ACENTO,
+            hover_color=COLOR_ACENTO_HOVER, text_color="#ffffff", height=36,
+            font=("Segoe UI", 12, "bold"))
+        self.btn_cfg_ado.pack(side="left", expand=True, fill="x", padx=(0, 6))
+        self.btn_cfg_excel = ctk.CTkButton(
+            frame_nube, text="Excel (archivo o URL)",
+            command=self._abrir_config_excel, fg_color=COLOR_ACENTO,
+            hover_color=COLOR_ACENTO_HOVER, text_color="#ffffff", height=36,
+            font=("Segoe UI", 12, "bold"))
+        self.btn_cfg_excel.pack(side="left", expand=True, fill="x", padx=(6, 0))
+
+        self.lbl_nube_excel = ctk.CTkLabel(self.frame_config,
+                                           text="Excel: sin configurar",
+                                           text_color=COLOR_TEXTO_SUAVE,
+                                           font=("Segoe UI", 11), anchor="w",
+                                           justify="left", wraplength=620)
+        self.lbl_nube_excel.pack(anchor="w", padx=18, pady=(4, 2))
+        self.lbl_nube_ado = ctk.CTkLabel(self.frame_config,
+                                         text="Azure DevOps: sin configurar",
+                                         text_color=COLOR_TEXTO_SUAVE,
+                                         font=("Segoe UI", 11), anchor="w",
+                                         justify="left", wraplength=620)
+        self.lbl_nube_ado.pack(anchor="w", padx=18, pady=(0, 10))
+
         self.btn_guardar = ctk.CTkButton(self.frame_config, text="Guardar configuración",
                                          command=self.guardar_config, fg_color="#2f9e6b",
                                          hover_color="#26895d", text_color="#ffffff",
@@ -1179,6 +1267,181 @@ class AppGUI(ctk.CTk):
                                border_color=COLOR_BORDE, text_color=COLOR_TEXTO, height=36)
         entrada.pack(padx=18, pady=(0, 10), fill="x")
         setattr(self, nombre_attr, entrada)
+
+    # ---------------- Matriz en la nube: configuración con botones ----------------
+    def _leer_config_json(self):
+        """Devuelve el diccionario completo de config_usuario.json."""
+        if os.path.exists(self.config_path):
+            try:
+                with open(self.config_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+            except Exception as e:
+                print(f"Error leyendo configuración: {e}")
+        return {}
+
+    def _escribir_config_json(self, data):
+        """Escribe config_usuario.json (creando la carpeta si hace falta)."""
+        carpeta = os.path.dirname(self.config_path)
+        if carpeta:
+            os.makedirs(carpeta, exist_ok=True)
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+
+    def _actualizar_estado_nube(self):
+        """Refresca las etiquetas que resumen la configuración de la matriz en la nube."""
+        cfg = self._leer_config_json()
+        matriz = cfg.get("matriz") if isinstance(cfg.get("matriz"), dict) else {}
+        azure = cfg.get("azure_devops") if isinstance(cfg.get("azure_devops"), dict) else {}
+
+        archivo = (matriz.get("excel_path") or "").strip()
+        url = (matriz.get("excel_url") or "").strip()
+        sincronizada = (matriz.get("excel_sync_dir") or "").strip()
+        if archivo:
+            texto_excel = f"Excel: {os.path.basename(archivo)}\n{archivo}"
+        elif url:
+            texto_excel = f"Excel (URL): {url}"
+            if sincronizada:
+                texto_excel += (f"\ncopia en la carpeta sincronizada (se sube a "
+                                f"SharePoint): {sincronizada}")
+            else:
+                texto_excel += ("\ncopia local: los cambios NO se suben a SharePoint "
+                                "(indica la carpeta sincronizada en el botón del Excel)")
+        else:
+            texto_excel = ("Excel: sin configurar\n"
+                           f"(se usará {os.path.join(rutas.MATRICES, 'Matriz.xlsx')})")
+
+        org = (azure.get("org") or "").strip()
+        proyecto = (azure.get("project") or "").strip()
+        if org or proyecto:
+            token = ((azure.get("pat") or "").strip()
+                     or os.environ.get("AZURE_DEVOPS_PAT", "").strip())
+            texto_ado = (f"Azure DevOps: {org or '(sin organización)'} · "
+                         f"{proyecto or '(sin proyecto)'} · "
+                         f"{'token OK' if token else 'falta el token (PAT)'}")
+        else:
+            texto_ado = "Azure DevOps: sin configurar"
+
+        if hasattr(self, "lbl_nube_excel"):
+            self.lbl_nube_excel.configure(text=texto_excel)
+        if hasattr(self, "lbl_nube_ado"):
+            self.lbl_nube_ado.configure(text=texto_ado)
+
+    def _abrir_config_azure(self):
+        """Diálogo para configurar Azure DevOps (organización, proyecto, PAT...)."""
+        cfg = self._leer_config_json()
+        azure = cfg.get("azure_devops") if isinstance(cfg.get("azure_devops"), dict) else {}
+
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Configurar Azure DevOps")
+        dlg.geometry("640x640")
+        dlg.configure(fg_color=COLOR_FONDO)
+        dlg.transient(self)
+        dlg.after(150, dlg.grab_set)
+
+        ctk.CTkLabel(dlg, text="Azure DevOps (work items)",
+                     font=("Segoe UI", 16, "bold"),
+                     text_color=COLOR_TEXTO).pack(anchor="w", padx=24, pady=(18, 2))
+        ctk.CTkLabel(dlg,
+                     text=("Genera un PAT en dev.azure.com → icono de usuario → "
+                           "Tokens de acceso personal\n(permiso \"Work Items: Read & "
+                           "Write\"). No necesitas una API key de administrador."),
+                     font=("Segoe UI", 11), text_color=COLOR_TEXTO_SUAVE,
+                     justify="left", wraplength=590).pack(anchor="w", padx=24,
+                                                          pady=(0, 10))
+
+        campos = [
+            ("Organización (URL)", "org", "https://dev.azure.com/MiOrganizacion"),
+            ("Proyecto", "project", "MiProyecto"),
+            ("Token de acceso personal (PAT)", "pat", ""),
+            ("Tipo de work item", "tipo_item", "Requirement"),
+            ("Area Path (opcional)", "area_path", ""),
+            ("Iteration Path (opcional)", "iteration_path", ""),
+        ]
+        entradas = {}
+        for etiqueta, clave, pista in campos:
+            ctk.CTkLabel(dlg, text=etiqueta, text_color=COLOR_TEXTO,
+                         font=("Segoe UI", 12)).pack(anchor="w", padx=24, pady=(8, 2))
+            entrada = ctk.CTkEntry(dlg, fg_color=COLOR_PANEL,
+                                   border_color=COLOR_BORDE, text_color=COLOR_TEXTO,
+                                   height=34, show="*" if clave == "pat" else None)
+            entrada.pack(padx=24, fill="x")
+            valor = str(azure.get(clave, "") or "")
+            if valor:
+                entrada.insert(0, valor)
+            elif clave == "tipo_item":
+                entrada.insert(0, "Requirement")
+            elif pista:
+                entrada.configure(placeholder_text=pista)
+            entradas[clave] = entrada
+
+        lbl_estado = ctk.CTkLabel(dlg, text="", text_color=COLOR_TEXTO_SUAVE,
+                                  font=("Segoe UI", 11), justify="left",
+                                  wraplength=590)
+        lbl_estado.pack(anchor="w", padx=24, pady=(10, 0))
+
+        def _probar():
+            datos = {k: e.get().strip() for k, e in entradas.items()}
+            lbl_estado.configure(text="Probando conexión...",
+                                 text_color=COLOR_TEXTO_SUAVE)
+            resultado = {}
+
+            def _worker():
+                try:
+                    resultado["texto"] = self.system.cloud.probar_azure(
+                        datos["org"], datos["project"], datos["pat"])
+                except Exception as e:
+                    resultado["texto"] = f"No pude conectar: {e}"
+
+            def _revisar():
+                """Se ejecuta en el hilo de la interfaz: la prueba va en un hilo aparte."""
+                try:
+                    if "texto" not in resultado:
+                        dlg.after(250, _revisar)
+                        return
+                    texto = resultado["texto"]
+                    color = "#2ecc71" if texto.startswith("Conexión") else "#e06c6c"
+                    lbl_estado.configure(text=texto, text_color=color)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_worker, daemon=True).start()
+            dlg.after(250, _revisar)
+
+        def _guardar():
+            datos = {k: e.get().strip() for k, e in entradas.items()}
+            if not datos["org"] or not datos["project"]:
+                lbl_estado.configure(text="Indica al menos la organización y el proyecto.",
+                                     text_color="#e06c6c")
+                return
+            cfg_actual = self._leer_config_json()
+            azure_cfg = cfg_actual.get("azure_devops")
+            if not isinstance(azure_cfg, dict):
+                azure_cfg = {}
+            azure_cfg.update(datos)
+            cfg_actual["azure_devops"] = azure_cfg
+            try:
+                self._escribir_config_json(cfg_actual)
+            except Exception as e:
+                lbl_estado.configure(text=f"No pude guardar: {e}", text_color="#e06c6c")
+                return
+            self._actualizar_estado_nube()
+            dlg.destroy()
+
+        frame_botones = ctk.CTkFrame(dlg, fg_color="transparent")
+        frame_botones.pack(fill="x", padx=24, pady=16)
+        ctk.CTkButton(frame_botones, text="Guardar", command=_guardar,
+                      fg_color="#2f9e6b", hover_color="#26895d", text_color="#ffffff",
+                      height=36, font=("Segoe UI", 12, "bold")).pack(side="right",
+                                                                     padx=(8, 0))
+        ctk.CTkButton(frame_botones, text="Probar conexión", command=_probar,
+                      fg_color=COLOR_ACENTO, hover_color=COLOR_ACENTO_HOVER,
+                      text_color="#ffffff", height=36,
+                      font=("Segoe UI", 12, "bold")).pack(side="right", padx=(8, 0))
+        ctk.CTkButton(frame_botones, text="Cancelar", command=dlg.destroy,
+                      fg_color=COLOR_HOVER, hover_color=COLOR_BORDE,
+                      text_color=COLOR_TEXTO, height=36).pack(side="right")
 
     def _cargar_reglas_ui(self):
         """Vuelca las reglas permanentes guardadas en el editor de la interfaz."""
@@ -1256,6 +1519,7 @@ class AppGUI(ctk.CTk):
         for w in self.chat_scroll.winfo_children():
             w.destroy()
         self._ind_pensando = None
+        self._pegado_abajo = True    # al abrir un hilo se muestra el final
         self._procesando = False
         self._burbujas = []
         self._seleccion = []
@@ -1283,6 +1547,222 @@ class AppGUI(ctk.CTk):
         except Exception as e:
             print(f"Error leyendo conversación: {e}")
         return pares
+
+    def _abrir_config_excel(self):
+        """Diálogo para elegir el Excel de la matriz: archivo local o URL."""
+        cfg = self._leer_config_json()
+        matriz = cfg.get("matriz") if isinstance(cfg.get("matriz"), dict) else {}
+
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Configurar Excel de la matriz")
+        dlg.geometry("700x580")
+        dlg.configure(fg_color=COLOR_FONDO)
+        dlg.transient(self)
+        dlg.after(150, dlg.grab_set)
+
+        ctk.CTkLabel(dlg, text="Excel de la matriz", font=("Segoe UI", 16, "bold"),
+                     text_color=COLOR_TEXTO).pack(anchor="w", padx=24, pady=(18, 2))
+        ctk.CTkLabel(dlg,
+                     text=("Elige el archivo .xlsx o pega el enlace (URL) del Excel.\n"
+                           "· Archivo dentro de una carpeta sincronizada de "
+                           "OneDrive/SharePoint: se sube solo.\n"
+                           "· URL + \"Carpeta sincronizada\": la copia se edita ahí y "
+                           "OneDrive sube los cambios a SharePoint solo.\n"
+                           "· URL sola: se edita una copia local y los cambios NO llegan a "
+                           "SharePoint."),
+                     font=("Segoe UI", 11), text_color=COLOR_TEXTO_SUAVE,
+                     justify="left", wraplength=640).pack(anchor="w", padx=24,
+                                                          pady=(0, 10))
+
+        ctk.CTkLabel(dlg, text="Archivo (.xlsx) o URL:", text_color=COLOR_TEXTO,
+                     font=("Segoe UI", 12)).pack(anchor="w", padx=24, pady=(6, 2))
+        frame_ruta = ctk.CTkFrame(dlg, fg_color="transparent")
+        frame_ruta.pack(fill="x", padx=24)
+        entrada_ruta = ctk.CTkEntry(frame_ruta, fg_color=COLOR_PANEL,
+                                    border_color=COLOR_BORDE, text_color=COLOR_TEXTO,
+                                    height=34)
+        entrada_ruta.pack(side="left", expand=True, fill="x", padx=(0, 8))
+        valor = (matriz.get("excel_path") or matriz.get("excel_url") or "")
+        if valor:
+            entrada_ruta.insert(0, str(valor))
+
+        def _examinar():
+            actual = entrada_ruta.get().strip().strip('"')
+            if not actual.lower().startswith(("http://", "https://")) \
+                    and os.path.dirname(actual):
+                inicial = os.path.dirname(actual)
+            else:
+                inicial = rutas.MATRICES
+            elegido = filedialog.askopenfilename(
+                title="Elegir Excel de la matriz", initialdir=inicial,
+                filetypes=[("Hojas de cálculo", "*.xlsx *.xlsm"), ("Todos", "*.*")])
+            if elegido:
+                entrada_ruta.delete(0, "end")
+                entrada_ruta.insert(0, elegido)
+
+        ctk.CTkButton(frame_ruta, text="Examinar...", command=_examinar,
+                      fg_color=COLOR_HOVER, hover_color=COLOR_BORDE,
+                      text_color=COLOR_TEXTO, height=34).pack(side="left")
+
+        def _descargar():
+            """Baja de nuevo el Excel publicado en la URL (copia local actualizada)."""
+            valor = entrada_ruta.get().strip().strip('"')
+            if not valor.lower().startswith(("http://", "https://")):
+                lbl_estado.configure(text="Escribe primero la URL del Excel.",
+                                     text_color="#e06c6c")
+                return
+            # Se usa la carpeta sincronizada escrita aquí, aunque no se haya guardado aún.
+            carpeta = os.path.expanduser(
+                os.path.expandvars(entrada_sync.get().strip().strip('"')))
+            if carpeta and not os.path.isdir(carpeta):
+                lbl_estado.configure(
+                    text=("La carpeta sincronizada no existe. Corrígela o déjala vacía para "
+                          "bajar solo una copia local."),
+                    text_color="#e06c6c")
+                return
+            lbl_estado.configure(text="Descargando...", text_color=COLOR_TEXTO_SUAVE)
+            resultado = {}
+
+            def _worker():
+                try:
+                    resultado["ruta"] = self.system.cloud.descargar_excel(
+                        valor, forzar=True, carpeta_sincronizada=carpeta or "")
+                except Exception as e:
+                    self.system.cloud.error_ruta = f"No pude descargar el Excel: {e}"
+                    resultado["ruta"] = None
+
+            def _revisar():
+                """Se ejecuta en el hilo de la interfaz: la descarga va en un hilo aparte."""
+                try:
+                    if "ruta" not in resultado:
+                        dlg.after(250, _revisar)
+                        return
+                    bajada = resultado["ruta"]
+                    if bajada:
+                        prefijo = ("Copia actualizada en la carpeta sincronizada "
+                                   "(OneDrive la subirá): ") if carpeta else \
+                                  "Copia local actualizada: "
+                        lbl_estado.configure(text=f"{prefijo}{bajada}",
+                                             text_color="#2ecc71")
+                    else:
+                        lbl_estado.configure(
+                            text=self.system.cloud.error_ruta or
+                                 "No pude descargar el Excel.",
+                            text_color="#e06c6c")
+                except Exception:
+                    pass
+
+            threading.Thread(target=_worker, daemon=True).start()
+            dlg.after(250, _revisar)
+
+        ctk.CTkLabel(dlg, text="Hoja:", text_color=COLOR_TEXTO,
+                     font=("Segoe UI", 12)).pack(anchor="w", padx=24, pady=(12, 2))
+        entrada_hoja = ctk.CTkEntry(dlg, fg_color=COLOR_PANEL,
+                                    border_color=COLOR_BORDE, text_color=COLOR_TEXTO,
+                                    height=34)
+        entrada_hoja.pack(padx=24, fill="x")
+        entrada_hoja.insert(0, str(matriz.get("hoja") or "Matriz"))
+
+        # Carpeta sincronizada (solo con URL): así los cambios se suben solos a SharePoint
+        ctk.CTkLabel(dlg, text="Carpeta sincronizada de OneDrive/SharePoint (opcional):",
+                     text_color=COLOR_TEXTO, font=("Segoe UI", 12)).pack(
+                         anchor="w", padx=24, pady=(12, 2))
+        frame_sync = ctk.CTkFrame(dlg, fg_color="transparent")
+        frame_sync.pack(fill="x", padx=24)
+        entrada_sync = ctk.CTkEntry(
+            frame_sync, fg_color=COLOR_PANEL, border_color=COLOR_BORDE,
+            text_color=COLOR_TEXTO, height=34,
+            placeholder_text="C:\\Users\\tu_usuario\\OneDrive - Empresa\\Shared Documents")
+        entrada_sync.pack(side="left", expand=True, fill="x", padx=(0, 8))
+        valor_sync = str(matriz.get("excel_sync_dir") or "")
+        if valor_sync:
+            entrada_sync.insert(0, valor_sync)
+
+        def _elegir_carpeta():
+            actual = entrada_sync.get().strip().strip('"')
+            inicial = actual if os.path.isdir(actual) else rutas.MATRICES
+            carpeta = filedialog.askdirectory(
+                title="Carpeta sincronizada de OneDrive/SharePoint", initialdir=inicial)
+            if carpeta:
+                entrada_sync.delete(0, "end")
+                entrada_sync.insert(0, os.path.normpath(carpeta))
+
+        ctk.CTkButton(frame_sync, text="Elegir carpeta...", command=_elegir_carpeta,
+                      fg_color=COLOR_HOVER, hover_color=COLOR_BORDE,
+                      text_color=COLOR_TEXTO, height=34).pack(side="left")
+        ctk.CTkLabel(dlg,
+                     text=("En SharePoint abre el Excel → \"Sincronizar\" y pon aquí esa "
+                           "carpeta local.\nLa copia descargada se guarda en ella con el "
+                           "mismo nombre, así OneDrive actualiza el archivo de SharePoint."),
+                     font=("Segoe UI", 11), text_color=COLOR_TEXTO_SUAVE,
+                     justify="left", wraplength=640).pack(anchor="w", padx=24, pady=(2, 0))
+
+        lbl_estado = ctk.CTkLabel(dlg, text="", text_color=COLOR_TEXTO_SUAVE,
+                                  font=("Segoe UI", 11), justify="left",
+                                  wraplength=640)
+        lbl_estado.pack(anchor="w", padx=24, pady=(10, 0))
+
+        def _guardar():
+            ruta_o_url = entrada_ruta.get().strip().strip('"')
+            if not ruta_o_url:
+                lbl_estado.configure(text="Indica un archivo o una URL.",
+                                     text_color="#e06c6c")
+                return
+            cfg_actual = self._leer_config_json()
+            matriz_cfg = cfg_actual.get("matriz")
+            if not isinstance(matriz_cfg, dict):
+                matriz_cfg = {}
+            if ruta_o_url.lower().startswith(("http://", "https://")):
+                matriz_cfg["excel_url"] = ruta_o_url
+                matriz_cfg.pop("excel_path", None)
+            else:
+                if not os.path.isabs(ruta_o_url):
+                    lbl_estado.configure(
+                        text="Para archivos usa la ruta completa (C:\\...\\Matriz.xlsx).",
+                        text_color="#e06c6c")
+                    return
+                if not os.path.exists(ruta_o_url):
+                    lbl_estado.configure(text="El archivo no existe. Revisa la ruta.",
+                                         text_color="#e06c6c")
+                    return
+                matriz_cfg["excel_path"] = ruta_o_url
+                matriz_cfg.pop("excel_url", None)
+            sincronizada = os.path.expanduser(
+                os.path.expandvars(entrada_sync.get().strip().strip('"')))
+            if sincronizada:
+                if not os.path.isdir(sincronizada):
+                    lbl_estado.configure(
+                        text=("La carpeta sincronizada no existe. Elige una carpeta real "
+                              "(usa \"Elegir carpeta...\")."),
+                        text_color="#e06c6c")
+                    return
+                matriz_cfg["excel_sync_dir"] = sincronizada
+            else:
+                matriz_cfg.pop("excel_sync_dir", None)
+            matriz_cfg["hoja"] = entrada_hoja.get().strip() or "Matriz"
+            matriz_cfg.setdefault("columnas", list(COLUMNAS_DEFECTO))
+            cfg_actual["matriz"] = matriz_cfg
+            try:
+                self._escribir_config_json(cfg_actual)
+            except Exception as e:
+                lbl_estado.configure(text=f"No pude guardar: {e}", text_color="#e06c6c")
+                return
+            self._actualizar_estado_nube()
+            dlg.destroy()
+
+        frame_botones = ctk.CTkFrame(dlg, fg_color="transparent")
+        frame_botones.pack(fill="x", padx=24, pady=16)
+        ctk.CTkButton(frame_botones, text="Guardar", command=_guardar,
+                      fg_color="#2f9e6b", hover_color="#26895d", text_color="#ffffff",
+                      height=36, font=("Segoe UI", 12, "bold")).pack(side="right",
+                                                                     padx=(8, 0))
+        ctk.CTkButton(frame_botones, text="Descargar URL ahora", command=_descargar,
+                      fg_color=COLOR_ACENTO, hover_color=COLOR_ACENTO_HOVER,
+                      text_color="#ffffff", height=36,
+                      font=("Segoe UI", 12, "bold")).pack(side="right", padx=(8, 0))
+        ctk.CTkButton(frame_botones, text="Cancelar", command=dlg.destroy,
+                      fg_color=COLOR_HOVER, hover_color=COLOR_BORDE,
+                      text_color=COLOR_TEXTO, height=36).pack(side="right")
 
     # ---------------- Configuración ----------------
     def _cargar_config_en_inputs(self):
@@ -1318,6 +1798,9 @@ class AppGUI(ctk.CTk):
         self.entry_nombre.insert(0, nombre)
         self.entry_rvc.insert(0, rvc)
 
+        # Matriz en la nube: se configura con sus propios botones/diálogos
+        self._actualizar_estado_nube()
+
     def guardar_config(self):
         """Guarda los datos de la interfaz en el JSON preservando claves existentes."""
         existente = {}
@@ -1339,6 +1822,10 @@ class AppGUI(ctk.CTk):
         existente["api_key"] = api_key
         existente["nombre_asistente"] = self.entry_nombre.get().strip().lower()
         existente["modelo_rvc_path"] = self.entry_rvc.get().strip()
+
+        # La matriz en la nube (Excel + Azure DevOps) se configura con sus propios
+        # botones y diálogos: aquí se conserva tal cual, sin modificarla.
+
         existente.setdefault("programas", {
             "discord": "discord://",
             "spotify": "spotify:",
@@ -1409,14 +1896,41 @@ class AppGUI(ctk.CTk):
         return any(p in t for p in ["detener dictado", "detén dictado", "fin del dictado",
                                     "salir del dictado", "terminar dictado"])
 
+    def _metadatos_reunion(self):
+        """Título e invitados de la reunión en curso, leídos del calendario.
+
+        La grabación los guarda en el acta, y con ellos se puede enviar el acta a
+        los asistentes sin tener que dictar los correos. Si no hay calendario
+        disponible se devuelve un dict vacío y la grabación sigue igual.
+        """
+        datos = {}
+        try:
+            evento, _mensaje = self.system.calendario.evento_en_curso()
+        except Exception as e:
+            print(f"No pude leer el calendario para la reunión: {e}")
+            return datos
+        if evento:
+            datos["titulo"] = evento.get("asunto", "")
+            datos["asistentes"] = list(evento.get("correos") or [])
+        return datos
+
     def _resumir_reunion(self, transcripcion):
+        """Genera el acta de la reunión con la estructura fija de Jarvis."""
         prompt = (
-            "Analiza esta transcripción de una reunión y genera un resumen estructurado en español con:\n"
-            "1. Objetivo principal de la sesión.\n"
-            "2. Puntos clave discutidos en orden.\n"
-            "3. Acuerdos y decisiones tomadas.\n"
-            "4. Tareas/compromisos con responsable y fecha límite si se menciona.\n\n"
-            "Transcripción:\n" + transcripcion
+            "Analiza esta transcripción de una reunión y escribe el ACTA en Markdown, "
+            "en español, con EXACTAMENTE estas secciones y en este orden:\n"
+            "## Objetivo\n"
+            "## Puntos tratados\n"
+            "## Acuerdos y decisiones\n"
+            "## Tareas\n"
+            "Aquí va una tabla Markdown con las columnas: Tarea | Responsable | Fecha. "
+            "Si el responsable o la fecha no se mencionan, escribe 'por definir'.\n"
+            "## Riesgos y bloqueos\n"
+            "## Próxima reunión\n"
+            "Reglas: no inventes nombres, fechas ni datos que no aparezcan en la "
+            "transcripción; si una sección no tiene contenido, escribe 'Sin datos en la "
+            "grabación'; no repitas la transcripción; no escribas nada antes del primer "
+            "'##'.\n\nTranscripción:\n" + transcripcion
         )
         return self.brain.analizar(prompt)
 

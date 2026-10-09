@@ -14,7 +14,9 @@ from modules.productivity import ProductivityTools
 from modules.dev_tools import DevTools
 from modules.outlook_tools import OutlookTools
 from modules.meeting_assistant import MeetingAssistant
+from modules.calendario_tools import CalendarioTools
 from modules.preventa_tools import PreventaTools
+from modules.cloud_matrix import CloudMatrix
 from modules import rutas
 
 try:
@@ -59,7 +61,9 @@ class SystemActions:
         self.dev = DevTools(config_path)
         self.outlook = OutlookTools()
         self.meeting = MeetingAssistant(config_path)
+        self.calendario = CalendarioTools()
         self.preventa = PreventaTools()
+        self.cloud = CloudMatrix(config_path)
 
     def ejecutar_comando(self, comando_str):
         if not comando_str:
@@ -68,6 +72,10 @@ class SystemActions:
         partes = comando_str.split("|")
         accion = partes[0].upper().strip()
         parametro = partes[1].strip() if len(partes) > 1 else None
+        # Texto libre: conserva todo lo que va tras el primer '|' (los '|' internos
+        # importan: tablas de Markdown en un documento, tuberías en un comando de
+        # terminal, etc.). Antes se perdía todo a partir del primer '|'.
+        parametro_libre = comando_str.split("|", 1)[1].strip() if len(partes) > 1 else None
 
         if accion == "ABRIR_APP":
             self.abrir_aplicacion(parametro)
@@ -88,15 +96,14 @@ class SystemActions:
         elif accion == "BRIEFING":
             return self.productivity.generar_briefing()
         elif accion == "NOTA":
-            self.productivity.agregar_nota(parametro or "")
+            self.productivity.agregar_nota(parametro_libre or "")
             return None
         elif accion == "LEER_NOTAS":
             return "__CONTEXTO__" + "Lee estas notas en voz alta:\n" + self.productivity.leer_notas()
         elif accion == "BORRAR_NOTAS":
             return self.productivity.borrar_notas()
         elif accion == "RECORDAR_REGLA":
-            texto = "|".join(partes[1:]).strip()
-            return self.productivity.agregar_regla(texto)
+            return self.productivity.agregar_regla(parametro_libre or "")
         elif accion == "LEER_REGLAS":
             reglas = self.productivity.leer_reglas()
             if not reglas:
@@ -120,7 +127,7 @@ class SystemActions:
                     "(feat:, fix:, docs:, refactor:...). Aquí están los cambios:\n"
                     + self.dev.obtener_contexto_git())
         elif accion == "EJECUTAR_TERMINAL":
-            return "__CONTEXTO__" + "Resume el resultado de este comando:\n" + self.dev.ejecutar_comando(parametro or "")
+            return "__CONTEXTO__" + "Resume el resultado de este comando:\n" + self.dev.ejecutar_comando(parametro_libre or "")
         elif accion == "POMODORO":
             try:
                 mins = int(parametro) if (parametro and parametro.isdigit()) else 25
@@ -137,18 +144,71 @@ class SystemActions:
                 return f"No encontré archivos que coincidan con '{parametro}'."
             return "__CONTEXTO__" + "Lista brevemente estos archivos encontrados:\n" + "\n".join(archivos)
         elif accion == "LEER_CORREOS":
-            try:
-                n = int(parametro) if (parametro and parametro.isdigit()) else 5
-            except Exception:
-                n = 5
-            return "__CONTEXTO__" + "Resume estos correos recientes (los importantes primero):\n" + self.outlook.leer_correos(n)
+            return ("__CONTEXTO__"
+                    "Resume estos correos recientes, los importantes primero (máximo 6 "
+                    "líneas), y dime si hay algo que requiera respuesta o acción:\n"
+                    + self.outlook.leer_correos(self._numero_correos(parametro, 8)))
+        elif accion == "RESUMEN_CORREOS":
+            return ("__CONTEXTO__"
+                    "Haz un resumen ejecutivo de este correo: qué es urgente, quién espera "
+                    "respuesta y qué se puede ignorar. Termina con una lista corta de "
+                    "acciones pendientes (con quién y para cuándo, si se menciona):\n"
+                    + self.outlook.resumen(parametro or "",
+                                           n=self._numero_correos(parametro, 10)))
+        elif accion == "BUSCAR_CORREOS":
+            return ("__CONTEXTO__"
+                    "Resume qué dicen estos correos sobre la búsqueda del usuario (di "
+                    "remitente, fecha y lo esencial de cada uno):\n"
+                    + self.outlook.buscar(parametro or "",
+                                          n=self._numero_correos(parametro, 10)))
+        elif accion == "CORREO_PENDIENTES":
+            return ("__CONTEXTO__"
+                    "Extrae de estos correos las tareas y compromisos pendientes y devuélvelos "
+                    "como lista (tarea, de quién depende y fecha límite si aparece). Si no hay "
+                    "ninguno claro, dilo:\n"
+                    + self.outlook.resumen(parametro or "",
+                                           n=self._numero_correos(parametro, 10)))
+        elif accion == "LEER_CORREO":
+            return ("__CONTEXTO__"
+                    "Resume y explica este correo en pocas frases; si pide algo, dilo:\n"
+                    + self.outlook.detalle(parametro_libre or parametro or ""))
+        elif accion == "RESPONDER_CORREO":
+            # clave;;texto[;;enviar]: el texto puede ser largo y llevar '|' o saltos
+            # de línea, así que se usa el parámetro completo troceado por ';;'.
+            partes_correo = (parametro_libre or "").split(";;", 2)
+            clave = partes_correo[0].strip() if partes_correo else ""
+            texto = partes_correo[1].strip() if len(partes_correo) > 1 else ""
+            modo = partes_correo[2].strip() if len(partes_correo) > 2 else ""
+            return self.outlook.responder(clave, texto, enviar=self._quiere_enviar(modo))
+        elif accion == "ENVIAR_BORRADOR":
+            return self.outlook.enviar_borrador((parametro_libre or parametro or "").strip())
+        elif accion == "ETIQUETAR_CORREO":
+            partes_etiqueta = (parametro_libre or "").split(";;", 1)
+            return self.outlook.etiquetar(
+                partes_etiqueta[0].strip() if partes_etiqueta else "",
+                partes_etiqueta[1].strip() if len(partes_etiqueta) > 1 else "")
+        elif accion == "ARCHIVAR_CORREO":
+            partes_archivo = (parametro_libre or "").split(";;", 1)
+            return self.outlook.archivar(
+                partes_archivo[0].strip() if partes_archivo else "",
+                partes_archivo[1].strip() if len(partes_archivo) > 1 else None)
+        elif accion == "MARCAR_CORREO":
+            partes_marca = (parametro_libre or "").split(";;", 1)
+            estado = partes_marca[1].strip().lower() if len(partes_marca) > 1 else ""
+            return self.outlook.marcar(
+                partes_marca[0].strip() if partes_marca else "",
+                leido=not ("no" in estado or "sin leer" in estado))
+        elif accion == "ELIMINAR_CORREO":
+            return self.outlook.eliminar((parametro_libre or parametro or "").strip())
         elif accion == "CREAR_DOCUMENTO":
-            partes_doc = (parametro or "").split(";;", 1)
+            # El contenido de un documento Markdown lleva '|' (tablas) y corchetes,
+            # así que se usa el parámetro completo, no el primero troceado por '|'.
+            partes_doc = (parametro_libre or "").split(";;", 1)
             nombre_doc = partes_doc[0].strip() if partes_doc else ""
             cuerpo_doc = partes_doc[1] if len(partes_doc) > 1 else ""
             return self.productivity.crear_documento(nombre_doc, cuerpo_doc)
         elif accion == "CREAR_BORRADOR":
-            partes_draft = (parametro or "").split(";;")
+            partes_draft = (parametro_libre or "").split(";;", 2)
             dest = partes_draft[0].strip() if partes_draft else ""
             asunto = partes_draft[1].strip() if len(partes_draft) > 1 else ""
             cuerpo = partes_draft[2].strip() if len(partes_draft) > 2 else ""
@@ -180,15 +240,35 @@ class SystemActions:
             return self.reproducir_video_youtube(consulta, posicion)
         elif accion == "GRABAR_REUNION":
             self.meeting.iniciar_grabacion()
-            return "Grabando la reunión."
+            titulo = (self.meeting.reunion_actual() or {}).get("titulo")
+            return (f"Grabando la reunión: {titulo}." if titulo else "Grabando la reunión.")
         elif accion == "TERMINAR_REUNION":
             threading.Thread(target=self.meeting.finalizar, daemon=True).start()
             return None
+        elif accion == "REUNIONES":
+            return self._listar_reuniones(parametro)
+        elif accion == "LEER_ACTA":
+            return self._leer_acta(parametro_libre or parametro or "")
+        elif accion == "REHACER_ACTA":
+            return self.meeting.rehacer_acta(parametro_libre or parametro or "")
+        elif accion == "ASISTENTES_REUNION":
+            return self._asistentes_reunion(parametro_libre or parametro or "")
+        elif accion == "ENVIAR_ACTA":
+            return self._enviar_acta(parametro_libre or parametro or "")
+        elif accion == "AGENDA_REUNION":
+            return self._agenda_reunion(parametro_libre or parametro or "")
         elif accion == "CREAR_PRESENTACION":
             return self.crear_presentacion_desde_md(parametro)
         elif accion == "GENERAR_PREVENTA":
             contenido = self.productivity.leer_portapapeles()
             return self.preventa.generar(parametro, contenido)
+        elif accion == "MATRIZ_NUBE":
+            return self.cloud.llenar(self.productivity.leer_portapapeles(),
+                                     parametro or "ambos")
+        elif accion == "MATRIZ_EXCEL":
+            return self.cloud.llenar(self.productivity.leer_portapapeles(), "excel")
+        elif accion == "MATRIZ_AZURE":
+            return self.cloud.llenar(self.productivity.leer_portapapeles(), "azure")
         elif accion == "REEMPLAZAR_LOGOS_PPT":
             ruta_ppt = parametro if parametro else self._obtener_ppt_reciente()
             if ruta_ppt:
@@ -196,6 +276,159 @@ class SystemActions:
                 print(res)
             else:
                 print("No se encontró ningún archivo .pptx disponible.")
+
+    @staticmethod
+    def _numero_correos(parametro, defecto):
+        """Número de correos que pide el usuario ('5', 'los 3 últimos', 'hoy 4')."""
+        coincidencia = re.search(r"\d{1,2}", str(parametro or ""))
+        if coincidencia:
+            return max(1, min(20, int(coincidencia.group())))
+        return defecto
+
+    @staticmethod
+    def _quiere_enviar(modo):
+        """True si el parámetro de la acción pide enviar el correo de verdad.
+
+        El modelo solo añade ';;enviar' cuando el usuario lo pide explícitamente;
+        sin ese indicador, 'RESPONDER_CORREO' deja un borrador sin enviar nada.
+        """
+        return str(modo or "").strip().lower() in (
+            "enviar", "envia", "envía", "send", "mandar", "manda", "ya", "si", "sí")
+
+    # ------------------------------------------------------------------ Reuniones, actas y calendario
+    def _listar_reuniones(self, parametro=None):
+        """Lista las actas de reunión guardadas (numeradas para poder pedirlas)."""
+        actas = self.meeting.listar_actas(self._numero_correos(parametro, 8))
+        if not actas:
+            return f"No hay ninguna reunión guardada todavía en {rutas.REUNIONES}."
+        lineas = []
+        for i, acta in enumerate(actas, 1):
+            detalle = acta["fecha"] or ""
+            if acta["duracion"]:
+                detalle += f" · {acta['duracion']}"
+            lineas.append(f"{i}. {acta['titulo']} — {detalle} — {acta['nombre']}")
+        return f"Reuniones guardadas ({len(actas)}):\n" + "\n".join(lineas)
+
+    def _leer_acta(self, clave=None):
+        """Pasa el acta a la IA para que la presente (asistentes, acuerdos y tareas)."""
+        acta, error = self.meeting.leer_acta(clave)
+        if acta is None:
+            return error
+        asistentes = ", ".join(acta["asistentes"]) or "no identificados"
+        contexto = (f"Título: {acta['titulo']}\n"
+                    f"Fecha: {acta['fecha'] or '(sin fecha)'}\n"
+                    f"Duración: {acta['duracion'] or 'no medida'}\n"
+                    f"Asistentes: {asistentes}\n\n{acta['cuerpo']}")
+        return ("__CONTEXTO__"
+                "Resume esta acta de reunión en español: primero los datos y los "
+                "acuerdos, y al final las tareas con su responsable y su fecha. Sé "
+                "claro y breve, y no inventes nada que no esté en el acta:\n\n" + contexto)
+
+    def _asistentes_reunion(self, clave=None):
+        """Asistentes de una reunión: los del acta o, si no hay, los del calendario."""
+        acta = None
+        if str(clave or "").strip():
+            acta, error = self.meeting.leer_acta(clave)
+            if acta is None:
+                return error
+        if acta is not None and acta["asistentes"]:
+            return (f"Asistentes de '{acta['titulo']}': " + "; ".join(acta["asistentes"]) + ".")
+        reunion = self.meeting.reunion_actual()
+        if reunion.get("asistentes"):
+            return ("Asistentes de la reunión grabada: "
+                    + "; ".join(reunion["asistentes"]) + ".")
+        datos, mensaje = self.calendario.invitados(acta["titulo"] if acta else None)
+        if datos is None:
+            return mensaje
+        if not datos["correos"]:
+            return (f"La reunión '{datos['asunto']}' del calendario no tiene invitados "
+                    "con correo.")
+        texto = f"Invitados de '{datos['asunto']}' ({self.calendario.texto_evento(datos, con_invitados=False)}): " + "; ".join(datos["correos"]) + "."
+        if datos["sin_correo"]:
+            texto += f"\nSin correo en la invitación: {', '.join(datos['sin_correo'])}."
+        return texto
+
+    def _crear_o_enviar(self, destinatarios, asunto, cuerpo, enviar=False):
+        """Crea el borrador del correo y, solo si 'enviar' es True, lo manda."""
+        resultado = str(self.outlook.crear_borrador(destinatarios, asunto, cuerpo))
+        if not enviar or "Borrador creado" not in resultado:
+            return resultado
+        envio = self.outlook.enviar_borrador()
+        return f"{resultado} {envio}"
+
+    def _enviar_acta(self, parametro=None):
+        """Prepara (o envía) el correo con el acta de una reunión.
+
+        Formato: ENVIAR_ACTA[|destinatarios separados por ';'][;;acta][;;enviar]
+
+        La 'acta' admite el número del listado de 'mis reuniones', parte de su
+        nombre o de su título; sin ella se usa la última reunión. Sin destinatarios
+        se usan los asistentes del acta, los de la reunión que se acaba de grabar o
+        los invitados del calendario. Como en el resto del correo, sin ';;enviar'
+        solo se deja el borrador preparado en Outlook.
+        """
+        partes = [p.strip() for p in str(parametro or "").split(";;")]
+        destinatarios, clave, enviar = "", "", False
+        posicion = 0
+        for parte in partes:
+            if parte.lower() in ("enviar", "envialo", "envíalo", "mandar", "manda",
+                                 "send", "si", "sí"):
+                enviar = True
+                continue
+            if posicion == 0:
+                destinatarios = parte
+            elif posicion == 1:
+                clave = parte
+            posicion += 1          # las partes vacías también ocupan su posición
+        if not clave and destinatarios.isdigit():
+            # 'ENVIAR_ACTA|2' es el acta 2, no un destinatario
+            destinatarios, clave = "", destinatarios
+        correo, error = self.meeting.acta_para_correo(clave)
+        if correo is None:
+            return error
+        if destinatarios.lower() in ("asistentes", "los asistentes", "invitados",
+                                     "los invitados", "todos", "auto", "automático",
+                                     "automatico"):
+            destinatarios = ""
+        if not destinatarios:
+            destinatarios = "; ".join(correo["destinatarios"])
+        if not destinatarios:
+            destinatarios = "; ".join((self.meeting.reunion_actual() or {}).get("asistentes") or [])
+        if not destinatarios:
+            datos, _mensaje = self.calendario.invitados(correo["titulo"])
+            if datos is not None:
+                destinatarios = "; ".join(datos["correos"])
+        if not destinatarios:
+            return ("No sé a quién mandar el acta. Dime los correos, por ejemplo: "
+                    "'envía el acta a ana@empresa.com y luis@empresa.com'.")
+        return self._crear_o_enviar(destinatarios, correo["asunto"], correo["cuerpo"], enviar)
+
+    def _agenda_reunion(self, parametro=None):
+        """Lee el calendario y pide a la IA una agenda para las próximas reuniones."""
+        texto = str(parametro or "").strip()
+        asunto = ""
+        dias = 7
+        coincidencia = re.match(r"^(\d{1,2})\s*(d[ií]as?|d)?$", texto.lower())
+        if coincidencia:
+            dias = max(1, min(30, int(coincidencia.group(1))))
+        elif texto:
+            asunto = texto
+        eventos, mensaje = self.calendario.proximos(dias=dias, limite=12)
+        if eventos is None:
+            return mensaje
+        if asunto:
+            filtrados = [e for e in eventos if asunto.lower() in e["asunto"].lower()]
+            eventos = filtrados or eventos
+        if not eventos:
+            return f"No veo reuniones en el calendario en los próximos {dias} día(s)."
+        lineas = [self.calendario.texto_evento(e) for e in eventos]
+        enfoque = (f"Concentra la agenda en la reunión '{asunto}'." if asunto else
+                   "Propón la agenda para la reunión más próxima de la lista.")
+        return ("__CONTEXTO__"
+                "Con estas reuniones del calendario, redacta la agenda previa de una "
+                "reunión en español: objetivo, temas a tratar con tiempos, decisiones "
+                "que hay que tomar y qué conviene llevar preparado. " + enfoque +
+                "\n\nReuniones del calendario:\n" + "\n".join(lineas))
 
     def abrir_aplicacion(self, nombre_app):
         if not nombre_app:
@@ -600,12 +833,19 @@ class SystemActions:
         if not contenido_md:
             return (f"No encontré un archivo .md. Pon tu contenido en la carpeta "
                     f"{rutas.PRESENTACIONES} o indica su ruta.")
-        return self.office_tool.crear_presentacion(
+        resultado = self.office_tool.crear_presentacion(
             contenido_md, plantilla,
             max_slides=limite,
             finales=self._finales_slides_config(),
             fijos=self._fijos_slides_config(),
             colas=self._colas_slides_config())
+        if not plantilla:
+            resultado += (f"\n\nOjo: no hay ninguna plantilla .pptx/.potx en "
+                          f"{rutas.PLANTILLAS}, así que se usó un diseño genérico "
+                          f"sin el fondo, la línea de cabecera ni el logo de la marca. "
+                          f"Copia tu plantilla corporativa en esa carpeta para que la "
+                          f"presentación salga con el diseño.")
+        return resultado
 
     @staticmethod
     def _parsear_parametro_presentacion(parametro):
