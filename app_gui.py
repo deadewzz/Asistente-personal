@@ -3,6 +3,7 @@ import glob
 import json
 import os
 import re
+import webbrowser
 import threading
 from datetime import datetime
 from tkinter import filedialog
@@ -1237,6 +1238,32 @@ class AppGUI(ctk.CTk):
                                          font=("Segoe UI", 11), anchor="w",
                                          justify="left", wraplength=620)
         self.lbl_nube_ado.pack(anchor="w", padx=18, pady=(0, 10))
+        # Correo (Outlook nuevo / Microsoft 365): se conecta una sola vez con un
+        # código de Microsoft; no hace falta contraseña ni Outlook clásico.
+        ctk.CTkLabel(self.frame_config,
+                     text="Correo (Outlook nuevo / Microsoft 365):",
+                     text_color=COLOR_TEXTO, font=("Segoe UI", 12)).pack(
+                         anchor="w", padx=18, pady=(14, 4))
+        frame_correo = ctk.CTkFrame(self.frame_config, fg_color="transparent")
+        frame_correo.pack(fill="x", padx=18, pady=(0, 6))
+        self.btn_conectar_correo = ctk.CTkButton(
+            frame_correo, text="Conectar correo", command=self._conectar_correo,
+            fg_color=COLOR_ACENTO, hover_color=COLOR_ACENTO_HOVER, text_color="#ffffff",
+            height=36, font=("Segoe UI", 12, "bold"))
+        self.btn_conectar_correo.pack(side="left", expand=True, fill="x", padx=(0, 6))
+        self.btn_desconectar_correo = ctk.CTkButton(
+            frame_correo, text="Desconectar", command=self._desconectar_correo,
+            fg_color=COLOR_PANEL, hover_color=COLOR_HOVER, text_color=COLOR_TEXTO,
+            border_width=1, border_color=COLOR_BORDE, height=36,
+            font=("Segoe UI", 12, "bold"))
+        self.btn_desconectar_correo.pack(side="left", expand=True, fill="x", padx=(6, 0))
+
+        self.lbl_correo = ctk.CTkLabel(self.frame_config, text="Correo: sin conectar",
+                                       text_color=COLOR_TEXTO_SUAVE,
+                                       font=("Segoe UI", 11), anchor="w",
+                                       justify="left", wraplength=620)
+        self.lbl_correo.pack(anchor="w", padx=18, pady=(4, 10))
+
 
         self.btn_guardar = ctk.CTkButton(self.frame_config, text="Guardar configuración",
                                          command=self.guardar_config, fg_color="#2f9e6b",
@@ -1327,6 +1354,119 @@ class AppGUI(ctk.CTk):
             self.lbl_nube_excel.configure(text=texto_excel)
         if hasattr(self, "lbl_nube_ado"):
             self.lbl_nube_ado.configure(text=texto_ado)
+    def _actualizar_estado_correo(self):
+        """Refresca la etiqueta que resume la conexión del correo."""
+        cfg = self._leer_config_json()
+        correo = cfg.get("correo") if isinstance(cfg.get("correo"), dict) else {}
+        cuenta = (correo.get("cuenta") or "").strip()
+        conectando = getattr(self, "_conectando_correo", False)
+        if correo.get("token"):
+            texto = f"Correo conectado: {cuenta}" if cuenta else "Correo conectado."
+            if not cuenta:
+                texto += " (pulsa 'Conectar correo' para comprobar la cuenta)"
+            texto += ("\nJarvis puede leerlo, resumirlo y dejar los borradores "
+                      "preparados; nunca envía nada por su cuenta.")
+            color = "#2ecc71"
+        elif conectando:
+            return                      # hay una conexión en curso: no pisamos el código
+        else:
+            texto = ("Correo: sin conectar\nSe conecta una sola vez con un código de "
+                     "Microsoft (el navegador se abre solo); no hace falta contraseña.")
+            color = COLOR_TEXTO_SUAVE
+        if hasattr(self, "lbl_correo"):
+            self.lbl_correo.configure(text=texto, text_color=color)
+
+    def _conectar_correo(self):
+        """Conecta el correo con el código de dispositivo, sin bloquear la ventana."""
+        if getattr(self, "_conectando_correo", False):
+            return
+        self._conectando_correo = True
+        self.btn_conectar_correo.configure(text="Esperando el código...", state="disabled")
+        self.lbl_correo.configure(text="Preparando la conexión con Microsoft...",
+                                  text_color=COLOR_TEXTO)
+        estado = {"abierto": False}
+
+        def avisar(texto):
+            """Enseña el código (acumulando líneas) y abre el navegador una vez."""
+            if not estado["abierto"] and re.search(r"código\s+[A-Z0-9][A-Z0-9-]{4,}",
+                                                   texto, re.IGNORECASE):
+                estado["abierto"] = True
+                try:
+                    webbrowser.open("https://microsoft.com/devicelogin")
+                except Exception as e:
+                    print(f"No pude abrir el navegador: {e}")
+
+            def pintar():
+                # El código y el tiempo llegan en dos avisos seguidos: se acumulan
+                # para que el código no desaparezca de la ventana.
+                previo = (self.lbl_correo.cget("text") or "").strip()
+                if previo.startswith("Preparando"):
+                    previo = ""
+                self.lbl_correo.configure(text=(f"{previo}\n{texto}" if previo else texto),
+                                          text_color=COLOR_TEXTO)
+
+            self.after(0, pintar)
+
+        def tarea():
+            from modules.correo_nube import CorreoNube
+            try:
+                ok, mensaje = CorreoNube(self.config_path).entrar(avisar=avisar)
+            except Exception as e:
+                ok, mensaje = False, f"No pude conectar tu correo: {e}"
+            self.after(0, lambda: self._correo_resuelto(ok, mensaje))
+
+        threading.Thread(target=tarea, daemon=True).start()
+
+    def _correo_resuelto(self, ok, mensaje):
+        """Termina la conexión del correo: pinta el resultado y rearma el botón."""
+        self._conectando_correo = False
+        self.btn_conectar_correo.configure(text="Conectar correo", state="normal")
+        self.lbl_correo.configure(text=mensaje,
+                                  text_color="#2ecc71" if ok else "#e06c6c")
+
+    def _desconectar_correo(self):
+        """Olvida la sesión de correo guardada, pidiendo confirmación."""
+        cfg = self._leer_config_json()
+        correo = cfg.get("correo") if isinstance(cfg.get("correo"), dict) else {}
+        if not correo.get("token"):
+            self.lbl_correo.configure(text="El correo todavía no está conectado.",
+                                      text_color=COLOR_TEXTO_SUAVE)
+            return
+
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Desconectar correo")
+        dlg.geometry("470x230")
+        dlg.configure(fg_color=COLOR_FONDO)
+        dlg.transient(self)
+        dlg.after(150, dlg.grab_set)
+        ctk.CTkLabel(dlg, text="¿Olvidar la sesión de tu correo?",
+                     font=("Segoe UI", 15, "bold"), text_color=COLOR_TEXTO).pack(
+                         anchor="w", padx=24, pady=(22, 6))
+        ctk.CTkLabel(dlg,
+                     text=("Jarvis borrará el token guardado y dejará de leer tu correo.\n"
+                           "Podrás volver a conectarlo cuando quieras."),
+                     font=("Segoe UI", 12), text_color=COLOR_TEXTO_SUAVE,
+                     justify="left").pack(anchor="w", padx=24)
+
+        def confirmar():
+            from modules.correo_nube import CorreoNube
+            correo_nube = CorreoNube(self.config_path)
+            correo_nube.salir()
+            dlg.destroy()
+            self.lbl_correo.configure(
+                text="Correo desconectado. Jarvis ya no accede a tu buzón.",
+                text_color=COLOR_TEXTO_SUAVE)
+
+        botones = ctk.CTkFrame(dlg, fg_color="transparent")
+        botones.pack(pady=(20, 12))
+        ctk.CTkButton(botones, text="Desconectar", command=confirmar,
+                      fg_color="#c0392b", hover_color="#a93226", text_color="#ffffff",
+                      height=34, font=("Segoe UI", 12, "bold")).pack(side="left", padx=6)
+        ctk.CTkButton(botones, text="Cancelar", command=dlg.destroy,
+                      fg_color=COLOR_PANEL, hover_color=COLOR_HOVER,
+                      text_color=COLOR_TEXTO, border_width=1, border_color=COLOR_BORDE,
+                      height=34, font=("Segoe UI", 12)).pack(side="left", padx=6)
+
 
     def _abrir_config_azure(self):
         """Diálogo para configurar Azure DevOps (organización, proyecto, PAT...)."""
@@ -1799,6 +1939,8 @@ class AppGUI(ctk.CTk):
         self.entry_rvc.insert(0, rvc)
 
         # Matriz en la nube: se configura con sus propios botones/diálogos
+        # Correo: idem (se conecta con 'Conectar correo')
+        self._actualizar_estado_correo()
         self._actualizar_estado_nube()
 
     def guardar_config(self):

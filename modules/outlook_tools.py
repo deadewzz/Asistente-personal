@@ -49,6 +49,29 @@ class OutlookTools:
         self._sin_sesion = False
 
     # ------------------------------------------------------------------ Conexión
+    # Se recuerda si el equipo tiene Outlook clásico registrado (chequeo barato)
+    _com_cache = None
+
+    @classmethod
+    def com_disponible(cls):
+        """True si hay Outlook clásico registrado en el equipo (sin llegar a abrirlo).
+
+        El Outlook nuevo (`olk.exe`) NO expone este COM: en esos equipos el correo
+        se usa a través de `modules.correo_nube` (Microsoft Graph).
+        """
+        if cls._com_cache is None:
+            cls._com_cache = cls._com_registrado()
+        return cls._com_cache
+
+    @staticmethod
+    def _com_registrado():
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, r"Outlook.Application\CLSID"):
+                return True
+        except Exception:
+            return False
+
     def _conectar(self):
         """Conecta con Outlook. Es idempotente: reutiliza la conexión abierta."""
         if self.outlook is not None:
@@ -121,8 +144,10 @@ class OutlookTools:
             return ("Outlook está abierto pero todavía no ha conectado con la cuenta "
                     "(muestra 'No está conectado'). Abre Outlook, comprueba que ves "
                     "tus correos y pídemelo otra vez.")
-        return ("No pude conectar con Outlook. Comprueba que está instalado y con "
-                "la cuenta configurada (si acabas de abrirlo, vuelve a intentarlo).")
+        return ("No pude conectar con el Outlook clásico. Comprueba que está instalado y "
+                "con la cuenta configurada (si acabas de abrirlo, vuelve a intentarlo). "
+                "Si usas el Outlook nuevo, conecta el correo por la nube una sola vez con "
+                "'python -m modules.correo_nube entrar' y pídemelo otra vez.")
 
     # ------------------------------------------------------------------ Utilidades
     @staticmethod

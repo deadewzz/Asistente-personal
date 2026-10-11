@@ -12,7 +12,8 @@ from screeninfo import get_monitors
 from modules.office_automation import OfficeAutomation
 from modules.productivity import ProductivityTools
 from modules.dev_tools import DevTools
-from modules.outlook_tools import OutlookTools
+from modules.outlook_tools import OutlookTools          # noqa: F401  (compatibilidad)
+from modules.correo import crear_cliente_correo
 from modules.meeting_assistant import MeetingAssistant
 from modules.calendario_tools import CalendarioTools
 from modules.preventa_tools import PreventaTools
@@ -59,7 +60,7 @@ class SystemActions:
         self.office_tool = OfficeAutomation()
         self.productivity = ProductivityTools(config_path)
         self.dev = DevTools(config_path)
-        self.outlook = OutlookTools()
+        self.outlook = crear_cliente_correo(config_path)
         self.meeting = MeetingAssistant(config_path)
         self.calendario = CalendarioTools()
         self.preventa = PreventaTools()

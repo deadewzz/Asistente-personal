@@ -38,11 +38,15 @@ Convenciones que se mantienen en todo el proyecto:
 | 1.4 | Etiquetar, archivar y marcar | ✅ | `ETIQUETAR_CORREO`, `ARCHIVAR_CORREO`, `MARCAR_CORREO`. |
 | 1.5 | Pendientes y acciones automáticos | ✅ | `CORREO_PENDIENTES|n` → la IA extrae compromisos, responsables y fechas. |
 | 1.6 | Leer un correo completo | ✅ | `LEER_CORREO|clave` (admite número del último listado o parte del asunto/remitente). |
+| 1.8 | Correo con Outlook cerrado o el Outlook nuevo | ✅ | `modules/correo_nube.py`: Microsoft Graph con OAuth2 de **código de dispositivo** (un código, sin contraseña ni registrar apps) y botón **«Conectar correo»** en Ajustes. Token cifrado con DPAPI. |
 | 1.7 | Adjuntos de un correo | ❌ | Guardarlos en `rutas.ADJUNTOS` y analizarlos (enlaza con 0.3). |
 
-*Se implementa con el Outlook de escritorio vía COM (`pywin32`, ya en uso): sin
-credenciales ni registro de aplicaciones. Microsoft Graph queda como opción
-futura si se quiere funcionar con Outlook cerrado.*
+*Se implementa con **dos caminos** y la app elige sola (`modules/correo.py`):
+- **Outlook de escritorio** vía COM (`pywin32`, ya en uso) cuando está instalado y abierto.
+- **Microsoft Graph** (`modules/correo_nube.py`) cuando no lo está o es el **Outlook
+  nuevo** (`olk.exe`), que no tiene API local. El buzón solo acepta `AUTH=XOAUTH2`,
+  así que OAuth2 de código de dispositivo es el único camino (y no necesita
+  registrar ninguna aplicación: se usa un cliente público de Microsoft).*
 
 ## Fase 2 — reuniones (prioridad 2)
 
@@ -174,7 +178,7 @@ Acciones de reuniones añadidas en la fase 2 (además de grabar y terminar):
 
 | Función | Qué se necesita |
 |---|---|
-| Correo y calendario | Nada: el Outlook de escritorio de este equipo ya está configurado (perfil MAPI). |
+| Correo y calendario | Nada para el Outlook de escritorio (COM, perfil MAPI ya configurado). Para el **Outlook nuevo o con Outlook cerrado**: conectarlo una vez con el código de Microsoft (*Ajustes → Conectar correo*), sin contraseña ni registrar aplicaciones. |
 | Teams / Slack / WhatsApp | Token de Slack (`chat:write`, `channels:history`) o app de Azure para Teams. |
 | Jira / Trello | API token + correo (Jira) o key/token (Trello). |
 | Azure DevOps (consultar y mover) | El mismo PAT que ya se usa para la matriz. |
@@ -183,7 +187,7 @@ Acciones de reuniones añadidas en la fase 2 (además de grabar y terminar):
 
 ## Orden de trabajo
 
-1. **Correo bidireccional** (fase 1) — hecho con Outlook COM (sin credenciales)
+1. **Correo bidireccional** (fase 1) — hecho: Outlook COM y, si no está, el correo por la nube (Graph)
 2. **Reuniones** (fase 2) — hecho: acta con responsables, agenda previa y envío del acta
 3. Cimientos: **lectura de archivos por ruta** (0.3), memoria (0.4) y auditoría (0.5)
 4. Calendario y tareas (fase 3)

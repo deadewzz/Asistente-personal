@@ -44,7 +44,8 @@ buscar en la web y mucho más.
 - **Crear documentos** (`.txt`, `.md`, `.csv`, `.docx`, `.pdf`).
 
 ### 📧 Correo y reuniones
-- **Leer y resumir el correo de Outlook**: lista los correos numerados (remitente,
+- **Leer y resumir el correo** (Outlook de escritorio o, cuando no está, el **Outlook
+  nuevo / Microsoft 365** por la nube): lista los correos numerados (remitente,
   hora, asunto, extracto y marca de no leído) y los clasifica por urgencia.
 - **Buscar correos** por asunto, remitente o contenido, y **leer uno completo**.
 - **Sacar pendientes**: extrae de los correos las tareas, responsables y fechas.
@@ -64,9 +65,19 @@ buscar en la web y mucho más.
 - **Preparar la próxima reunión**: «prepara la agenda de mi próxima reunión» lee
   el calendario de Outlook y redacta la agenda.
 
-Todo el correo funciona con el **Outlook de escritorio** que ya tienes
-configurado (COM): no hace falta ninguna credencial ni registrar aplicaciones.
-Si Outlook no está abierto o está sin conectar, Jarvis te lo dice y no hace nada.
+Jarvis tiene **dos caminos** para el correo y elige solo, sin que tengas que hacer nada:
+- **Outlook de escritorio** (COM): si lo tienes instalado y abierto, ya funciona.
+- **Correo por la nube** (Microsoft Graph): para el **Outlook nuevo** (`olk.exe`),
+  que no se puede controlar por COM, o cuando el Outlook clásico está cerrado.
+  Se conecta **una sola vez** desde *Ajustes → «Conectar correo»*: Jarvis te da un
+  código, abre la web de Microsoft y tú lo escribes ahí. **Nunca le das tu
+  contraseña a Jarvis.** El token se guarda **cifrado con DPAPI** (solo lo puede
+  descifrar tu usuario de Windows en este equipo) y lo puedes olvidar cuando
+  quieras con *Desconectar*.
+
+Consecuencia práctica: **el correo sigue funcionando con Outlook cerrado**, y las
+respuestas y actas siguen quedando en **Borradores** (nada se envía solo).
+Si no hay ninguno de los dos caminos, Jarvis te lo dice y no hace nada.
 
 ### ☁️ Matriz en la nube
 - **Llenar una matriz** en **Excel (OneDrive/SharePoint)** y en **Azure DevOps** de una
@@ -190,6 +201,36 @@ pip install -r requirements.txt
    - Uso: copia los datos (columnas separadas por tabulador, `;` o `,`) y pide
      «llena la matriz de la nube». También puedes usar `[ACCION: MATRIZ_EXCEL]` o
      `[ACCION: MATRIZ_AZURE]` para un solo destino.
+4. (Muy recomendado) **Conectar el correo** (para el Outlook nuevo o con Outlook
+   cerrado). Abre la pestaña *Ajustes* y pulsa **«Conectar correo»**: Jarvis te
+   muestra un código en la ventana, abre solo la web de Microsoft y tú escribes ahí
+   el código. **No hace falta contraseña ni registrar ninguna aplicación en Azure.**
+   Los permisos que se conceden son solo los que usa Jarvis (`Mail.ReadWrite`,
+   `Mail.Send`, `User.Read`) y los puedes revocar con *Desconectar* o desde
+   <https://myaccount.microsoft.com/consent>.
+   También puedes hacerlo desde la consola:
+   ```powershell
+   python -m modules.correo_nube entrar    # conectar (una sola vez)
+   python -m modules.correo_nube probar    # comprobar la conexión y listar 3 correos
+   python -m modules.correo_nube salir     # olvidar la sesión guardada
+   ```
+   Se guarda en `config_usuario.json` → `correo`, con el token **cifrado con DPAPI**
+   (es decir, atado a tu usuario de Windows de este equipo):
+   ```json
+   {
+       "correo": {
+           "token": "<token cifrado>",
+           "cifrado": true,
+           "cuenta": "tu.correo@empresa.com",
+           "cliente_id": "d3590ed6-52b3-4102-aeff-aad2292ab01c",
+           "tenant": "common"
+       }
+   }
+   ```
+   > Se usa un cliente público conocido de Microsoft (*"Microsoft Office"*), así que
+   > no hay que crear una app en Azure. Si tu empresa exige una app propia, cambia
+   > `cliente_id` (y `tenant` si hay un inquilino concreto) con los mismos permisos.
+
 
 > ⚠️ El archivo `.env` y `config/config_usuario.json` están en `.gitignore` porque
 > pueden contener tu clave de API. **Nunca** los subas al repositorio.
@@ -247,13 +288,19 @@ Asistente/
 │   ├── system_actions.py   # Enrutador de acciones del sistema
 │   ├── productivity.py     # Notas, portapapeles, pomodoro, perfiles, documentos
 │   ├── office_automation.py# PowerPoint y presentaciones desde plantilla
-│   ├── outlook_tools.py    # Correo de Outlook
+│   ├── correo.py           # Elige el cliente de correo (Outlook COM o nube)
+│   ├── correo_nube.py      # Correo por la nube (Microsoft Graph + OAuth2)
+│   ├── outlook_tools.py    # Correo de Outlook por COM
 │   ├── calendario_tools.py # Calendario de Outlook (reunión en curso, próximas, invitados)
 │   ├── meeting_assistant.py# Grabación, transcripción y acta de reuniones
 │   ├── preventa_tools.py   # Documentos de preventa
 │   ├── cloud_matrix.py     # Matriz en la nube (Excel + Azure DevOps)
 │   ├── dev_tools.py        # Commits de Git y comandos de terminal
 │   ├── ocr_engine.py       # OCR (Tesseract / RapidOCR)
+├── tests/
+│   ├── pruebas_correo_nube.py    # Pruebas del correo en la nube (Graph simulado)
+│   ├── pruebas_correo_en_vivo.py # Comprobación real contra Microsoft (sin credenciales)
+│   └── pruebas_gui_correo.py     # Pruebas de la sección de correo de la ventana
 │   └── rutas.py            # Rutas centralizadas de la carpeta de Jarvis
 └── assets/
     ├── plantillas/         # Plantillas .pptx corporativas
@@ -261,6 +308,20 @@ Asistente/
 ```
 
 ---
+## 🧪 Pruebas
+
+No hacen falta librerías extra: cada archivo se ejecuta solo y termina diciendo
+cuántas comprobaciones ha pasado (salida `0` si todo va bien). Ninguna toca tu
+configuración real ni tu buzón (usan una configuración temporal).
+
+```powershell
+python tests\pruebas_correo_nube.py      # correo por la nube, con Microsoft simulado
+python tests\pruebas_gui_correo.py       # botones y avisos de Ajustes (abre la ventana)
+python tests\pruebas_correo_en_vivo.py   # HTTP real contra Microsoft (necesita internet)
+```
+
+---
+
 
 ## 🗂️ Carpeta de datos de Jarvis
 
