@@ -3,8 +3,8 @@ import glob
 import json
 import os
 import re
-import webbrowser
 import threading
+import webbrowser
 from datetime import datetime
 from tkinter import filedialog
 
@@ -102,6 +102,9 @@ class AppGUI(ctk.CTk):
 
         # Herramientas de preventa: generación de documentos con la IA
         self.system.preventa.on_generar = self._generar_preventa
+
+        # SharePoint/OneDrive sin Graph: clasificación de archivos con la IA
+        self.system.sharepoint.on_clasificar = self._clasificar_archivos_ia
 
         # Configuración de la ventana principal
         self.title("Jarvis")
@@ -246,6 +249,13 @@ class AppGUI(ctk.CTk):
             fg_color="transparent", hover_color=COLOR_HOVER, text_color=COLOR_TEXTO_SUAVE,
             font=("Segoe UI", 16), command=self._adjuntar_archivos)
         self.btn_adjuntar.pack(side="left", padx=(8, 0), pady=9)
+
+        # Botón para abrir el mini-explorador de archivos (📁)
+        self.btn_explorador = ctk.CTkButton(
+            caja, text="\U0001F4C1", width=34, height=34, corner_radius=17,
+            fg_color="transparent", hover_color=COLOR_HOVER, text_color=COLOR_TEXTO_SUAVE,
+            font=("Segoe UI", 16), command=self._abrir_explorador)
+        self.btn_explorador.pack(side="left", padx=(4, 0), pady=9)
 
         self.entry_chat = ctk.CTkEntry(
             caja, placeholder_text="Escribe un mensaje a Jarvis...",
@@ -546,6 +556,244 @@ class AppGUI(ctk.CTk):
                 self._aviso_input(f"No encontré la ubicación: {destino}")
         except Exception as e:
             self._aviso_input(f"No pude abrir la ubicación: {e}")
+
+    # ---------------- Mini-explorador de archivos ----------------
+    def _abrir_explorador(self):
+        """Abre la ventana del mini-explorador (o la trae al frente si ya existe)."""
+        ventana = getattr(self, "_ventana_explorador", None)
+        if ventana is not None and ventana.winfo_exists():
+            ventana.lift()
+            ventana.focus_force()
+            return
+        self._ventana_explorador = ctk.CTkToplevel(self)
+        dlg = self._ventana_explorador
+        dlg.title("Explorador de archivos")
+        dlg.geometry("760x560")
+        dlg.configure(fg_color=COLOR_FONDO)
+        dlg.transient(self)
+
+        self._expl_dir = None       # carpeta actual
+        self._expl_sel = set()      # rutas de archivos seleccionados
+        self._expl_todos = []       # rutas de archivos visibles (para 'seleccionar todo')
+        self._expl_botones = {}     # ruta -> (botón, texto base) de los archivos
+
+        # Cabecera: ruta actual + navegación
+        cabecera = ctk.CTkFrame(dlg, fg_color="transparent")
+        cabecera.pack(fill="x", padx=16, pady=(16, 6))
+        ctk.CTkButton(cabecera, text="⬆", width=38, height=34, font=("Segoe UI", 14),
+                      fg_color=COLOR_TARJETA, hover_color=COLOR_HOVER,
+                      text_color=COLOR_TEXTO, command=self._expl_subir).pack(side="left")
+        ctk.CTkButton(cabecera, text="⌂", width=38, height=34, font=("Segoe UI", 14),
+                      fg_color=COLOR_TARJETA, hover_color=COLOR_HOVER,
+                      text_color=COLOR_TEXTO,
+                      command=self._expl_raiz).pack(side="left", padx=(6, 6))
+        self._expl_entry_ruta = ctk.CTkEntry(
+            cabecera, placeholder_text="Ruta de la carpeta...", fg_color=COLOR_TARJETA,
+            border_color=COLOR_BORDE, text_color=COLOR_TEXTO, font=("Segoe UI", 12))
+        self._expl_entry_ruta.pack(side="left", fill="x", expand=True)
+        self._expl_entry_ruta.bind("<Return>", lambda e: self._expl_ir())
+        ctk.CTkButton(cabecera, text="Ir", width=44, height=34, font=("Segoe UI", 12),
+                      fg_color=COLOR_ACENTO, hover_color=COLOR_ACENTO_HOVER,
+                      text_color="#ffffff", command=self._expl_ir).pack(side="left", padx=(6, 0))
+
+        # Búsqueda dentro de la carpeta
+        busqueda = ctk.CTkFrame(dlg, fg_color="transparent")
+        busqueda.pack(fill="x", padx=16, pady=(4, 6))
+        self._expl_entry_buscar = ctk.CTkEntry(
+            busqueda, placeholder_text="Buscar dentro de esta carpeta...",
+            fg_color=COLOR_TARJETA, border_color=COLOR_BORDE,
+            text_color=COLOR_TEXTO, font=("Segoe UI", 12))
+        self._expl_entry_buscar.pack(side="left", fill="x", expand=True)
+        self._expl_entry_buscar.bind("<Return>", lambda e: self._expl_buscar())
+        ctk.CTkButton(busqueda, text="Buscar", width=72, height=34, font=("Segoe UI", 12),
+                      fg_color=COLOR_ACENTO, hover_color=COLOR_ACENTO_HOVER,
+                      text_color="#ffffff",
+                      command=self._expl_buscar).pack(side="left", padx=(6, 0))
+        ctk.CTkButton(busqueda, text="Carpeta", width=72, height=34, font=("Segoe UI", 12),
+                      fg_color=COLOR_TARJETA, hover_color=COLOR_HOVER,
+                      text_color=COLOR_TEXTO,
+                      command=self._expl_actualizar).pack(side="left", padx=(6, 0))
+
+        # Lista de contenidos
+        self._expl_lista = ctk.CTkScrollableFrame(dlg, fg_color=COLOR_PANEL,
+                                                  corner_radius=10)
+        self._expl_lista.pack(fill="both", expand=True, padx=16, pady=(0, 6))
+
+        # Pie: estado + botones
+        pie = ctk.CTkFrame(dlg, fg_color="transparent")
+        pie.pack(fill="x", padx=16, pady=(0, 16))
+        self._expl_lbl_estado = ctk.CTkLabel(pie, text="", font=("Segoe UI", 11),
+                                             text_color=COLOR_TEXTO_SUAVE, anchor="w",
+                                             justify="left")
+        self._expl_lbl_estado.pack(fill="x", pady=(0, 6))
+        botones = ctk.CTkFrame(pie, fg_color="transparent")
+        botones.pack(fill="x")
+        self._expl_lbl_sel = ctk.CTkLabel(botones, text="0 seleccionados",
+                                          font=("Segoe UI", 11),
+                                          text_color=COLOR_TEXTO_SUAVE)
+        self._expl_lbl_sel.pack(side="left", pady=6)
+        ctk.CTkButton(botones, text="Seleccionar todo", width=120, height=30,
+                      font=("Segoe UI", 11), fg_color=COLOR_TARJETA,
+                      hover_color=COLOR_HOVER, text_color=COLOR_TEXTO,
+                      command=self._expl_todo).pack(side="left", padx=(10, 0))
+        ctk.CTkButton(botones, text="Abrir", width=70, height=30, font=("Segoe UI", 11),
+                      fg_color=COLOR_TARJETA, hover_color=COLOR_HOVER,
+                      text_color=COLOR_TEXTO,
+                      command=self._expl_abrir).pack(side="left", padx=(6, 0))
+        ctk.CTkButton(botones, text="Mover a…", width=90, height=30, font=("Segoe UI", 11),
+                      fg_color=COLOR_ACENTO, hover_color=COLOR_ACENTO_HOVER,
+                      text_color="#ffffff",
+                      command=lambda: self._expl_mover_copiar("mover")).pack(side="right")
+        ctk.CTkButton(botones, text="Copiar a…", width=90, height=30, font=("Segoe UI", 11),
+                      fg_color=COLOR_ACENTO, hover_color=COLOR_ACENTO_HOVER,
+                      text_color="#ffffff",
+                      command=lambda: self._expl_mover_copiar("copiar")).pack(
+                          side="right", padx=(0, 6))
+
+        # Punto de partida: primera raíz disponible (OneDrive si existe)
+        raices = self.system.archivos.raices()
+        self._expl_ir(raices[0] if raices else os.path.expanduser("~"))
+
+    def _expl_ir(self, ruta=None):
+        ruta = ruta or self._expl_entry_ruta.get().strip()
+        ruta = self.system.archivos.normalizar(ruta)
+        entradas = self.system.archivos.listar(ruta)
+        if entradas is None:
+            self._expl_estado(f"No pude abrir: {ruta}")
+            return
+        self._expl_dir = ruta
+        self._expl_entry_ruta.delete(0, "end")
+        self._expl_entry_ruta.insert(0, ruta)
+        self._expl_sel.clear()
+        self._expl_todos = []
+        self._expl_botones = {}
+        for widget in self._expl_lista.winfo_children():
+            widget.destroy()
+        self._expl_fila(None, "📁  ..", es_subir=True)
+        for entrada in entradas:
+            icono = "📁" if entrada["es_carpeta"] else "📄"
+            self._expl_fila(entrada, f"{icono}  {entrada['nombre']}")
+        self._expl_estado_sel()
+        self._expl_estado(f"{len(entradas)} elemento(s) en {ruta}")
+
+    def _expl_fila(self, entrada, texto, es_subir=False):
+        """Crea una fila: '..' para subir, carpeta para entrar o archivo para marcar."""
+        if es_subir:
+            ctk.CTkButton(self._expl_lista, text=texto, anchor="w", height=28,
+                          fg_color="transparent", hover_color=COLOR_HOVER,
+                          text_color=COLOR_TEXTO_SUAVE, font=("Segoe UI", 12),
+                          command=self._expl_subir).pack(fill="x", padx=6, pady=2)
+            return
+        es_carpeta = bool(entrada.get("es_carpeta"))
+        ruta = entrada["ruta"]
+        if es_carpeta:
+            ctk.CTkButton(self._expl_lista, text=texto, anchor="w", height=28,
+                          fg_color="transparent", hover_color=COLOR_HOVER,
+                          text_color=COLOR_TEXTO, font=("Segoe UI", 12),
+                          command=lambda r=ruta: self._expl_ir(r)).pack(fill="x", padx=6, pady=2)
+        else:
+            self._expl_todos.append(ruta)
+            boton = ctk.CTkButton(self._expl_lista, text=texto, anchor="w", height=28,
+                                  fg_color=COLOR_TARJETA, hover_color=COLOR_HOVER,
+                                  text_color=COLOR_TEXTO, font=("Segoe UI", 12))
+            boton.pack(fill="x", padx=6, pady=2)
+            self._expl_botones[ruta] = (boton, texto)
+            boton.configure(command=lambda r=ruta, b=boton, t=texto:
+                            self._expl_toggle(r, b, t))
+
+    def _expl_subir(self):
+        actual = self.system.archivos.normalizar(self._expl_dir or "")
+        if actual:
+            self._expl_ir(os.path.dirname(actual))
+
+    def _expl_raiz(self):
+        raices = self.system.archivos.raices()
+        if raices:
+            self._expl_ir(raices[0])
+
+    def _expl_actualizar(self):
+        self._expl_ir(self._expl_dir)
+
+    def _expl_buscar(self):
+        carpeta = self._expl_dir or self._expl_entry_ruta.get().strip()
+        nombre = self._expl_entry_buscar.get().strip()
+        if not nombre:
+            self._expl_actualizar()
+            return
+        resultados = self.system.archivos.buscar(carpeta, nombre)
+        for widget in self._expl_lista.winfo_children():
+            widget.destroy()
+        self._expl_todos = list(resultados)
+        self._expl_sel.clear()
+        self._expl_botones = {}
+        if not resultados:
+            ctk.CTkLabel(self._expl_lista, text=f"Sin resultados para «{nombre}»",
+                         font=("Segoe UI", 12), text_color=COLOR_TEXTO_SUAVE,
+                         anchor="w").pack(fill="x", padx=10, pady=8)
+        for ruta in resultados:
+            texto = f"📄  {ruta}"
+            boton = ctk.CTkButton(self._expl_lista, text=texto, anchor="w", height=28,
+                                  fg_color=COLOR_TARJETA, hover_color=COLOR_HOVER,
+                                  text_color=COLOR_TEXTO, font=("Segoe UI", 12))
+            boton.pack(fill="x", padx=6, pady=2)
+            self._expl_botones[ruta] = (boton, texto)
+            boton.configure(command=lambda r=ruta, b=boton, t=texto:
+                            self._expl_toggle(r, b, t))
+        self._expl_estado_sel()
+        self._expl_estado(f"{len(resultados)} archivo(s) encontrados")
+
+    def _expl_toggle(self, ruta, boton, texto):
+        if ruta in self._expl_sel:
+            self._expl_sel.discard(ruta)
+            boton.configure(fg_color=COLOR_TARJETA, text=texto)
+        else:
+            self._expl_sel.add(ruta)
+            boton.configure(fg_color=COLOR_ACENTO_HOVER, text="✓ " + texto)
+        self._expl_estado_sel()
+
+    def _expl_todo(self):
+        if len(self._expl_sel) == len(self._expl_todos):
+            self._expl_sel.clear()
+        else:
+            self._expl_sel = set(self._expl_todos)
+        for ruta, (boton, texto) in self._expl_botones.items():
+            if ruta in self._expl_sel:
+                boton.configure(fg_color=COLOR_ACENTO_HOVER, text="✓ " + texto)
+            else:
+                boton.configure(fg_color=COLOR_TARJETA, text=texto)
+        self._expl_estado_sel()
+
+    def _expl_abrir(self):
+        seleccion = sorted(self._expl_sel)
+        if seleccion:
+            for ruta in seleccion:
+                self._abrir_ubicacion(ruta)
+        elif self._expl_dir:
+            self._abrir_ubicacion(self._expl_dir)
+        else:
+            self._expl_estado("Selecciona algo para abrirlo.")
+
+    def _expl_mover_copiar(self, accion):
+        seleccion = sorted(self._expl_sel)
+        if not seleccion:
+            self._expl_estado("Selecciona primero uno o varios archivos.")
+            return
+        destino = filedialog.askdirectory(title=f"Carpeta de destino ({accion})",
+                                          initialdir=self._expl_dir or None)
+        if not destino:
+            return
+        operacion = (self.system.archivos.mover if accion == "mover"
+                     else self.system.archivos.copiar)
+        resultado = operacion(seleccion, destino, confirmado=True)
+        self._expl_estado(self.system.archivos.resumen(resultado))
+        self._expl_sel.clear()
+        self._expl_actualizar()
+
+    def _expl_estado(self, texto):
+        self._expl_lbl_estado.configure(text=texto)
+
+    def _expl_estado_sel(self):
+        self._expl_lbl_sel.configure(text=f"{len(self._expl_sel)} seleccionados")
 
     def _toggle_seleccion(self, registro):
         """Marca o desmarca una burbuja como seleccionada."""
@@ -1238,6 +1486,7 @@ class AppGUI(ctk.CTk):
                                          font=("Segoe UI", 11), anchor="w",
                                          justify="left", wraplength=620)
         self.lbl_nube_ado.pack(anchor="w", padx=18, pady=(0, 10))
+
         # Correo (Outlook nuevo / Microsoft 365): se conecta una sola vez con un
         # código de Microsoft; no hace falta contraseña ni Outlook clásico.
         ctk.CTkLabel(self.frame_config,
@@ -1263,7 +1512,6 @@ class AppGUI(ctk.CTk):
                                        font=("Segoe UI", 11), anchor="w",
                                        justify="left", wraplength=620)
         self.lbl_correo.pack(anchor="w", padx=18, pady=(4, 10))
-
 
         self.btn_guardar = ctk.CTkButton(self.frame_config, text="Guardar configuración",
                                          command=self.guardar_config, fg_color="#2f9e6b",
@@ -1354,6 +1602,7 @@ class AppGUI(ctk.CTk):
             self.lbl_nube_excel.configure(text=texto_excel)
         if hasattr(self, "lbl_nube_ado"):
             self.lbl_nube_ado.configure(text=texto_ado)
+
     def _actualizar_estado_correo(self):
         """Refresca la etiqueta que resume la conexión del correo."""
         cfg = self._leer_config_json()
@@ -1466,7 +1715,6 @@ class AppGUI(ctk.CTk):
                       fg_color=COLOR_PANEL, hover_color=COLOR_HOVER,
                       text_color=COLOR_TEXTO, border_width=1, border_color=COLOR_BORDE,
                       height=34, font=("Segoe UI", 12)).pack(side="left", padx=6)
-
 
     def _abrir_config_azure(self):
         """Diálogo para configurar Azure DevOps (organización, proyecto, PAT...)."""
@@ -1939,9 +2187,9 @@ class AppGUI(ctk.CTk):
         self.entry_rvc.insert(0, rvc)
 
         # Matriz en la nube: se configura con sus propios botones/diálogos
+        self._actualizar_estado_nube()
         # Correo: idem (se conecta con 'Conectar correo')
         self._actualizar_estado_correo()
-        self._actualizar_estado_nube()
 
     def guardar_config(self):
         """Guarda los datos de la interfaz en el JSON preservando claves existentes."""
@@ -2056,25 +2304,19 @@ class AppGUI(ctk.CTk):
             datos["asistentes"] = list(evento.get("correos") or [])
         return datos
 
-    def _resumir_reunion(self, transcripcion):
-        """Genera el acta de la reunión con la estructura fija de Jarvis."""
-        prompt = (
-            "Analiza esta transcripción de una reunión y escribe el ACTA en Markdown, "
-            "en español, con EXACTAMENTE estas secciones y en este orden:\n"
-            "## Objetivo\n"
-            "## Puntos tratados\n"
-            "## Acuerdos y decisiones\n"
-            "## Tareas\n"
-            "Aquí va una tabla Markdown con las columnas: Tarea | Responsable | Fecha. "
-            "Si el responsable o la fecha no se mencionan, escribe 'por definir'.\n"
-            "## Riesgos y bloqueos\n"
-            "## Próxima reunión\n"
-            "Reglas: no inventes nombres, fechas ni datos que no aparezcan en la "
-            "transcripción; si una sección no tiene contenido, escribe 'Sin datos en la "
-            "grabación'; no repitas la transcripción; no escribas nada antes del primer "
-            "'##'.\n\nTranscripción:\n" + transcripcion
-        )
-        return self.brain.analizar(prompt)
+    def _resumir_reunion(self, transcripcion, metadatos=None):
+        """Analiza la grabación y devuelve el acta con la información rescatada.
+
+        El trabajo fino (ficha de la reunión, troceado de las grabaciones largas y
+        plantilla del acta) está en `MeetingAssistant.analizar_transcripcion`, que usa
+        `APIBrain.analizar_documento` como motor: una salida larga, sin el límite de
+        tres frases del chat y sin interpretar comandos de acción dentro del acta.
+        """
+        datos = dict(metadatos or {})
+        if not datos:
+            datos = self.system.meeting.reunion_actual() or {}
+        return self.system.meeting.analizar_transcripcion(
+            transcripcion, datos, self.brain.analizar_documento)
 
     def _generar_preventa(self, tipo, contenido):
         prompts = {
@@ -2086,7 +2328,11 @@ class AppGUI(ctk.CTk):
             "estimacion": "Genera una estimación de esfuerzo por fases (análisis, diseño, desarrollo, pruebas, despliegue) con horas y supuestos. Usa Markdown.",
         }
         prompt = prompts.get(tipo, "Procesa este contenido y genera un documento estructurado en Markdown.") + "\n\nContenido:\n" + contenido
-        return self.brain.analizar(prompt)
+        return self.brain.analizar_documento(prompt)
+
+    def _clasificar_archivos_ia(self, nombres, regla):
+        """Clasifica archivos con la IA: devuelve [(nombre, subcarpeta)]."""
+        return self.brain.clasificar_archivos(nombres, regla)
 
     def reproducir_voz(self, texto, modelo_rvc=None):
         """Reproduce texto con edge-tts (voz española) y cae a pyttsx3 offline si falla."""

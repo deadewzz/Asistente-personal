@@ -47,6 +47,11 @@ rapidocr-onnxruntime>=1.3.0
 # Búsqueda y reproducción de videos
 yt-dlp>=2024.1.0
 
+# SharePoint/OneDrive sin Graph: controla Brave por DevTools Protocol (CDP)
+# para reutilizar la sesión ya iniciada (el navegador firma las peticiones).
+# aiohttp se usa solo para el WebSocket local con Brave.
+aiohttp>=3.9.0
+
 # Captura de audio del sistema (reuniones)
 soundcard>=0.4.0
 

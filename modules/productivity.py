@@ -141,13 +141,449 @@ class ProductivityTools:
             return f"No pude crear el documento: {e}"
         return f"Documento creado en: {ruta}"
 
-    @staticmethod
-    def _escribir_docx(ruta, contenido):
+    # --- Estilos y patrones para convertir Markdown en un .docx con estructura ---
+    COLOR_ACENTO = "1F6F4A"   # verde Jarvis: títulos y cabecera de las tablas
+    COLOR_CELDA = "F2F4F3"    # gris muy claro para los fondos (bloques de código)
+    # Títulos Markdown: #, ##, ### ... (con o sin espacio, pero no una línea de #)
+    _RE_TITULO = re.compile(r"^(#{1,6})[ \t]*([^#\s].*?)[ \t]*$")
+    _RE_VINETA = re.compile(r"^[-*+]\s+(.*)$")           # viñetas - * +
+    _RE_NUMERO = re.compile(r"^\d+[.)]\s+(.*)$")         # listas 1. / 1)
+    _RE_REGLA = re.compile(r"^([-*_])(?:\s*\1){2,}$")    # regla --- *** ___
+    # Fila de asignación: "Nombre - Tarea" (guion, raya, flecha o tabulador)
+    _RE_ASIGNACION = re.compile(r"^(?P<izq>[^-*+>\s].*?)\s+(?:[-–—»→]|->)\s+(?P<der>.+)$")
+    # Formato inline: **negrita**, __negrita__, `código`, *cursiva*, _cursiva_
+    _RE_INLINE = re.compile(r"(\*\*.+?\*\*|__.+?__|`[^`]+`|\*[^*\n]+?\*|_[^_\n]+?_)")
+    # Palabras que indican que la primera fila de una tabla es su cabecera.
+    _PALABRAS_CABECERA = {
+        "nombre", "nombres", "persona", "personas", "responsable", "responsables",
+        "encargado", "encargada", "asignado", "asignada", "usuario", "cliente",
+        "tarea", "tareas", "actividad", "actividades", "accion", "descripcion",
+        "detalle", "detalles", "estado", "fecha", "prioridad", "comentario",
+        "comentarios", "observacion", "area", "cargo", "proyecto", "item", "punto",
+        "puntos", "rol", "equipo", "sprint", "horas",
+    }
+
+    def _escribir_docx(self, ruta, contenido):
+        """Genera un .docx con estructura a partir de un texto en Markdown.
+
+        En lugar de volcar cada línea tal cual, interpreta el Markdown para que
+        el Word quede ordenado: los encabezados (#, ##, ###) se vuelven títulos,
+        las viñetas (- * +) y las listas numeradas (1.) en listas reales, las
+        citas (>) y los bloques de código (```) con su estilo, y tanto las tablas
+        con '|' como las filas del estilo 'Nombre - Tarea' se convierten en una
+        tabla con cabecera resaltada.
+        """
         from docx import Document
+
         doc = Document()
-        for linea in contenido.splitlines():
-            doc.add_paragraph(linea)
+        self._configurar_estilos_docx(doc)
+        titulo = None
+        for tipo, datos in self._bloques_desde_markdown(contenido):
+            if tipo == "titulo" and titulo is None:
+                titulo = self._texto_plano(datos[1])
+            self._renderizar_bloque_docx(doc, tipo, datos)
+        if titulo:
+            try:
+                doc.core_properties.title = titulo
+            except Exception:
+                pass
         doc.save(ruta)
+
+    @staticmethod
+    def _configurar_estilos_docx(doc):
+        """Ajusta la tipografía y los colores base para que el documento sea legible."""
+        from docx.shared import Pt, RGBColor
+
+        acento = RGBColor(0x1F, 0x6F, 0x4A)
+        try:
+            normal = doc.styles["Normal"]
+            normal.font.name = "Calibri"
+            normal.font.size = Pt(11)
+            normal.font.color.rgb = RGBColor(0x28, 0x2A, 0x29)
+            normal.paragraph_format.space_after = Pt(6)
+            normal.paragraph_format.line_spacing = 1.15
+        except Exception:
+            pass
+        for nombre, tam, antes in (
+            ("Heading 1", 21, 0), ("Heading 2", 16, 12),
+            ("Heading 3", 13.5, 10), ("Heading 4", 12, 8),
+        ):
+            try:
+                estilo = doc.styles[nombre]
+                estilo.font.name = "Calibri Light"
+                estilo.font.size = Pt(tam)
+                estilo.font.bold = True
+                estilo.font.color.rgb = acento
+                estilo.paragraph_format.space_before = Pt(antes)
+                estilo.paragraph_format.space_after = Pt(6)
+                estilo.paragraph_format.keep_with_next = True
+            except Exception:
+                continue
+
+    # --- Clasificación del Markdown en bloques con significado ---
+    def _bloques_desde_markdown(self, contenido):
+        """Convierte el Markdown en una lista de bloques (tipo, datos).
+
+        Cada bloque es una unidad lista para renderizar: 'titulo', 'vinetas',
+        'numeros', 'cita', 'codigo', 'tabla', 'regla' o 'parrafo'. Así el .docx
+        conserva la jerarquía del Markdown en lugar de copiarlo línea a línea.
+        """
+        lineas = (contenido or "").splitlines()
+        bloques = []
+        i, total = 0, len(lineas)
+        while i < total:
+            texto = lineas[i].strip()
+            if not texto:
+                i += 1
+                continue
+            # Bloque de código cercado con ```
+            if texto.startswith("```"):
+                i += 1
+                codigo = []
+                while i < total and not lineas[i].strip().startswith("```"):
+                    codigo.append(lineas[i].rstrip())
+                    i += 1
+                bloques.append(("codigo", codigo or [""]))
+                i += 1
+                continue
+            # Regla horizontal (---, ***, ___)
+            if self._RE_REGLA.match(texto):
+                bloques.append(("regla", None))
+                i += 1
+                continue
+            # Título (#, ##, ### ...)
+            titulo = self._RE_TITULO.match(texto)
+            if titulo:
+                bloques.append(("titulo", (len(titulo.group(1)), titulo.group(2).strip())))
+                i += 1
+                continue
+            # Cita (> ...) uniendo las líneas consecutivas
+            if texto.startswith(">"):
+                citas = []
+                while i < total and lineas[i].strip().startswith(">"):
+                    citas.append(lineas[i].strip().lstrip(">").strip())
+                    i += 1
+                bloques.append(("cita", " ".join(c for c in citas if c)))
+                continue
+            # Tabla Markdown con tuberías (| a | b |)
+            if self._es_fila_tabla_md(texto):
+                filas = []
+                while i < total and self._es_fila_tabla_md(lineas[i].strip()):
+                    filas.append(lineas[i].strip())
+                    i += 1
+                bloques.append(self._tabla_desde_pipes(filas))
+                continue
+            # Listas con viñetas (- * +)
+            if self._RE_VINETA.match(texto):
+                items = []
+                while i < total and self._RE_VINETA.match(lineas[i].strip()):
+                    items.append(self._RE_VINETA.match(lineas[i].strip()).group(1).strip())
+                    i += 1
+                bloques.append(self._lista_como_bloque(items))
+                continue
+            # Listas numeradas (1. 2. ...)
+            if self._RE_NUMERO.match(texto):
+                items = []
+                while i < total and self._RE_NUMERO.match(lineas[i].strip()):
+                    items.append(self._RE_NUMERO.match(lineas[i].strip()).group(1).strip())
+                    i += 1
+                bloques.append(self._lista_como_bloque(items, "numeros"))
+                continue
+            # Filas "Nombre - Tarea": se agrupan y se vuelven una tabla
+            if self._RE_ASIGNACION.match(texto):
+                filas = []
+                while i < total and self._RE_ASIGNACION.match(lineas[i].strip()):
+                    coincidencia = self._RE_ASIGNACION.match(lineas[i].strip())
+                    filas.append((coincidencia.group("izq").strip(),
+                                  coincidencia.group("der").strip()))
+                    i += 1
+                bloques.append(self._bloque_asignacion(filas))
+                continue
+            # Párrafo: líneas seguidas hasta el siguiente bloque
+            parrafo = []
+            while i < total:
+                actual = lineas[i].strip()
+                if not actual or self._inicia_bloque(actual):
+                    break
+                parrafo.append(actual)
+                i += 1
+            if parrafo:
+                bloques.append(("parrafo", " ".join(parrafo)))
+        return bloques
+
+    def _inicia_bloque(self, texto):
+        """True si 'texto' abre un bloque distinto de un párrafo normal."""
+        return bool(
+            texto.startswith("```")
+            or self._RE_REGLA.match(texto)
+            or self._RE_TITULO.match(texto)
+            or texto.startswith(">")
+            or self._es_fila_tabla_md(texto)
+            or self._RE_VINETA.match(texto)
+            or self._RE_NUMERO.match(texto)
+            or self._RE_ASIGNACION.match(texto)
+        )
+
+    @staticmethod
+    def _es_fila_tabla_md(texto):
+        """True si la línea parece una fila de tabla Markdown (| a | b |)."""
+        return texto.count("|") >= 2 and (texto.startswith("|") or texto.endswith("|"))
+
+    @staticmethod
+    def _tabla_desde_pipes(filas):
+        """Convierte las filas '|...|' en un bloque de tabla."""
+        def celdas(fila):
+            return [c.strip() for c in fila.strip().strip("|").split("|")]
+
+        def es_separadora(columnas):
+            return bool(columnas) and all(
+                re.fullmatch(r":?-{2,}:?", columna or "") for columna in columnas)
+
+        matriz = [celdas(fila) for fila in filas]
+        cabeceras, datos = None, matriz
+        if len(matriz) >= 2 and es_separadora(matriz[1]):
+            cabeceras, datos = matriz[0], matriz[2:]
+        else:
+            datos = [fila for fila in matriz if not es_separadora(fila)]
+        if not datos:
+            return ("parrafo", " | ".join(filas))
+        return ("tabla", (cabeceras, datos))
+
+    def _lista_como_bloque(self, items, tipo="vinetas"):
+        """Convierte una lista en tabla si todos sus ítems son 'Nombre - Tarea'."""
+        pares = [self._RE_ASIGNACION.match(item) for item in items]
+        if pares and all(pares):
+            filas = [(p.group("izq").strip(), p.group("der").strip()) for p in pares]
+            bloque = self._bloque_asignacion(filas)
+            if bloque[0] == "tabla":
+                return bloque
+        return (tipo, items)
+
+    def _bloque_asignacion(self, filas):
+        """Decide si las filas 'Nombre - Tarea' forman una tabla o son texto normal."""
+        if self._forman_tabla_asignacion(filas):
+            return ("tabla", self._cabeceras_asignacion(filas))
+        return ("parrafo", " ".join("%s - %s" % (izq, der) for izq, der in filas))
+
+    def _forman_tabla_asignacion(self, filas):
+        """Con 2+ filas siempre es tabla; con una sola, solo si parece un nombre."""
+        if not filas:
+            return False
+        return len(filas) >= 2 or self._parece_nombre(filas[0][0])
+
+    @staticmethod
+    def _parece_nombre(texto):
+        """True si 'texto' parece un nombre propio corto (1-3 palabras)."""
+        palabras = (texto or "").split()
+        if not 1 <= len(palabras) <= 3:
+            return False
+        if texto.rstrip().endswith((".", ",", ";", ":", "?", "!")):
+            return False
+        return all(palabra[:1].isupper() or palabra.isupper() for palabra in palabras)
+
+    def _cabeceras_asignacion(self, filas):
+        """Separa (cabeceras, datos); usa la 1ª fila como cabecera si lo parece."""
+        cabeceras = None
+        datos = [list(fila) for fila in filas]
+        if filas:
+            izq, der = filas[0]
+            if (self._normalizar_palabra(izq) in self._PALABRAS_CABECERA
+                    and self._normalizar_palabra(der) in self._PALABRAS_CABECERA):
+                cabeceras, datos = [izq, der], [list(fila) for fila in filas[1:]]
+        return cabeceras or ["Persona", "Tarea"], datos
+
+    @staticmethod
+    def _normalizar_palabra(texto):
+        """Normaliza una palabra (minúsculas y sin acentos) para compararla."""
+        base = (texto or "").strip().lower()
+        for acento, plano in (("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"),
+                              ("ú", "u"), ("ü", "u"), ("ñ", "n")):
+            base = base.replace(acento, plano)
+        return re.sub(r"[^a-z]", "", base)
+
+    # --- Volcado de los bloques ya clasificados al documento Word ---
+    def _renderizar_bloque_docx(self, doc, tipo, datos):
+        """Escribe en el documento un bloque previamente clasificado."""
+        if tipo == "titulo":
+            self._agregar_titulo_docx(doc, datos[0], datos[1])
+        elif tipo == "vinetas":
+            for item in datos:
+                self._agregar_parrafo_docx(doc, item, "List Bullet")
+        elif tipo == "numeros":
+            for item in datos:
+                self._agregar_parrafo_docx(doc, item, "List Number")
+        elif tipo == "cita":
+            self._agregar_cita_docx(doc, datos)
+        elif tipo == "codigo":
+            self._agregar_codigo_docx(doc, datos)
+        elif tipo == "tabla":
+            self._agregar_tabla_docx(doc, datos[0], datos[1])
+        elif tipo == "regla":
+            self._agregar_regla_docx(doc)
+        elif tipo == "parrafo":
+            self._agregar_parrafo_docx(doc, datos)
+
+    def _agregar_titulo_docx(self, doc, nivel, texto):
+        """Agrega un título con el estilo Heading correspondiente."""
+        nivel = max(1, min(6, int(nivel)))
+        try:
+            parrafo = doc.add_paragraph(style="Heading %d" % nivel)
+        except Exception:
+            parrafo = doc.add_paragraph()
+        self._agregar_runs(parrafo, texto)
+        return parrafo
+
+    def _agregar_parrafo_docx(self, doc, texto, estilo=None):
+        """Agrega un párrafo (con estilo opcional) y su formato inline."""
+        try:
+            parrafo = doc.add_paragraph(style=estilo) if estilo else doc.add_paragraph()
+        except Exception:
+            parrafo = doc.add_paragraph()
+        self._agregar_runs(parrafo, texto)
+        return parrafo
+
+    def _agregar_cita_docx(self, doc, texto):
+        """Agrega una cita con el estilo de cita del tema."""
+        from docx.shared import Pt
+
+        try:
+            parrafo = doc.add_paragraph(style="Intense Quote")
+        except Exception:
+            parrafo = doc.add_paragraph()
+            parrafo.paragraph_format.left_indent = Pt(18)
+        self._agregar_runs(parrafo, texto)
+        return parrafo
+
+    def _agregar_codigo_docx(self, doc, lineas):
+        """Agrega un bloque de código en monoespaciada con fondo gris."""
+        from docx.shared import Pt
+
+        for i, linea in enumerate(lineas or [""]):
+            parrafo = doc.add_paragraph()
+            formato = parrafo.paragraph_format
+            formato.space_before = Pt(6 if i == 0 else 0)
+            formato.space_after = Pt(6 if i == len(lineas) - 1 else 0)
+            formato.left_indent = Pt(10)
+            formato.line_spacing = 1.0
+            run = parrafo.add_run(linea if linea.strip() else " ")
+            run.font.name = "Consolas"
+            run.font.size = Pt(9.5)
+            self._sombrear_parrafo(parrafo, self.COLOR_CELDA)
+
+    def _agregar_regla_docx(self, doc):
+        """Dibuja una línea horizontal con el borde inferior de un párrafo."""
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+        from docx.shared import Pt
+
+        parrafo = doc.add_paragraph()
+        parrafo.paragraph_format.space_before = Pt(4)
+        parrafo.paragraph_format.space_after = Pt(8)
+        bordes = OxmlElement("w:pBdr")
+        inferior = OxmlElement("w:bottom")
+        inferior.set(qn("w:val"), "single")
+        inferior.set(qn("w:sz"), "6")
+        inferior.set(qn("w:space"), "1")
+        inferior.set(qn("w:color"), self.COLOR_ACENTO)
+        bordes.append(inferior)
+        parrafo._p.get_or_add_pPr().append(bordes)
+        return parrafo
+
+    def _agregar_tabla_docx(self, doc, cabeceras, filas):
+        """Inserta una tabla con la cabecera resaltada y celdas legibles."""
+        from docx.enum.table import WD_TABLE_ALIGNMENT
+
+        filas = [list(fila) for fila in (filas or [])]
+        cabeceras = list(cabeceras) if cabeceras else None
+        ncols = max([len(cabeceras) if cabeceras else 0] + [len(f) for f in filas] or [0])
+        total = (1 if cabeceras else 0) + len(filas)
+        if ncols == 0 or total == 0:
+            return None
+        tabla = doc.add_table(rows=total, cols=ncols)
+        tabla.alignment = WD_TABLE_ALIGNMENT.CENTER
+        for estilo in ("Light Grid Accent 1", "Light List Accent 1", "Table Grid"):
+            try:
+                tabla.style = estilo
+                break
+            except Exception:
+                continue
+        indice = 0
+        if cabeceras:
+            self._rellenar_fila_tabla(tabla.rows[indice], cabeceras, ncols, True)
+            indice += 1
+        for fila in filas:
+            self._rellenar_fila_tabla(tabla.rows[indice], fila, ncols, False)
+            indice += 1
+        return tabla
+
+    def _rellenar_fila_tabla(self, fila_tabla, valores, ncols, encabezado):
+        """Rellena una fila de la tabla respetando el formato inline."""
+        from docx.shared import Pt, RGBColor
+
+        for columna in range(ncols):
+            celda = fila_tabla.cells[columna]
+            parrafo = celda.paragraphs[0]
+            parrafo.paragraph_format.space_before = Pt(2)
+            parrafo.paragraph_format.space_after = Pt(2)
+            valor = valores[columna] if columna < len(valores) else ""
+            self._agregar_runs(parrafo, str(valor))
+            if encabezado:
+                for run in parrafo.runs:
+                    run.bold = True
+                    run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+                self._sombrear_celda(celda, self.COLOR_ACENTO)
+            elif columna == 0 and ncols == 2:
+                for run in parrafo.runs:
+                    run.bold = True
+
+    def _agregar_runs(self, parrafo, texto):
+        """Añade el texto a un párrafo aplicando el formato inline del Markdown."""
+        from docx.shared import Pt, RGBColor
+
+        for parte in self._RE_INLINE.split(texto or ""):
+            if not parte:
+                continue
+            if ((parte.startswith("**") and parte.endswith("**"))
+                    or (parte.startswith("__") and parte.endswith("__"))):
+                parrafo.add_run(parte[2:-2]).bold = True
+            elif parte.startswith("`") and parte.endswith("`"):
+                run = parrafo.add_run(parte[1:-1])
+                run.font.name = "Consolas"
+                run.font.size = Pt(10)
+                run.font.color.rgb = RGBColor(0xB0, 0x39, 0x2E)
+            elif ((parte.startswith("*") and parte.endswith("*"))
+                  or (parte.startswith("_") and parte.endswith("_"))):
+                parrafo.add_run(parte[1:-1]).italic = True
+            else:
+                parrafo.add_run(parte)
+
+    def _texto_plano(self, texto):
+        """Quita el formato inline del Markdown (para títulos y metadatos)."""
+        return self._RE_INLINE.sub(lambda m: m.group(0).strip("*_`"), texto or "").strip()
+
+    @staticmethod
+    def _sombrear_parrafo(parrafo, relleno):
+        """Aplica un color de fondo a un párrafo."""
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+
+        sombra = OxmlElement("w:shd")
+        sombra.set(qn("w:val"), "clear")
+        sombra.set(qn("w:color"), "auto")
+        sombra.set(qn("w:fill"), relleno)
+        parrafo._p.get_or_add_pPr().append(sombra)
+
+    @staticmethod
+    def _sombrear_celda(celda, relleno):
+        """Aplica un color de fondo a una celda de tabla."""
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+
+        sombra = OxmlElement("w:shd")
+        sombra.set(qn("w:val"), "clear")
+        sombra.set(qn("w:color"), "auto")
+        sombra.set(qn("w:fill"), relleno)
+        celda._tc.get_or_add_tcPr().append(sombra)
 
     @staticmethod
     def _escribir_pdf(ruta, contenido):

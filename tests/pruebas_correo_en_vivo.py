@@ -58,6 +58,7 @@ datos = cliente._pedir_json(f"{AUTORIDAD}/common/oauth2/v2.0/devicecode",
 comprobar(bool(datos.get("user_code")), "Microsoft devuelve un código de dispositivo")
 comprobar(bool(datos.get("verification_uri")), "Microsoft devuelve la web para escribir el código")
 print(f"     -> código de ejemplo: {datos.get('user_code')} en {datos.get('verification_uri')}")
+print(f"     -> cliente público: {cliente._cliente_id()}")
 
 print("\n== Error de sesión caducada ==")
 with open(CONFIG, "w", encoding="utf-8") as f:

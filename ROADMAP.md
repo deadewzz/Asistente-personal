@@ -27,6 +27,8 @@ Convenciones que se mantienen en todo el proyecto:
 | 0.5 | **Registro/auditoría de acciones** | ❌ | `modules/auditoria.py` → `Jarvis/auditoria/AAAAMM.md`: qué se pidió, cuándo y con qué resultado. |
 | 0.6 | **Permisos por tarea** | ❌ | `permisos.json`: acciones que exigen confirmación (enviar correo, borrar, apagar, publicar). |
 | 0.7 | **Tareas programadas** | ❌ | `modules/programador.py` con hilo propio (`schedule` no está instalado): diario/semanal/mensual. Base de informes periódicos y del modo no molestar. |
+| 0.8 | **Explorador de archivos y mover/copiar** | ✅ | `modules/archivos.py` + mini-explorador (📁) y acciones `LISTAR_CARPETA`, `BUSCAR_EN_CARPETA`, `MOVER_ARCHIVOS`, `COPIAR_ARCHIVOS` (mover/copiar piden confirmación). |
+| 0.9 | **Clasificar archivos de SharePoint sin Graph** | ✅ | `modules/sharepoint.py` + `modules/navegador_cdp.py` + acción `CLASIFICAR_ARCHIVOS|origen;;destino;;regla`: controla Brave por CDP (sin descifrar cookies) para listar con la sesión del usuario, clasifica con la IA y mueve por la API `_api` de SharePoint. Acepta la URL tal cual la copia SharePoint (`.../Forms/AllItems.aspx?viewid=...`: se queda con la carpeta, y respeta `RootFolder=`/`id=`). Antes de fiarse de un listado comprueba que la carpeta/archivo existen de verdad, porque `_api` responde **200 con lista vacía** a rutas que no existen: con eso, una carpeta mal escrita parecía vacía y un choque de nombres podía pasar inadvertido. Nunca pisa el destino y, si no puede comprobarlo, no mueve. |
 
 ## Fase 1 — correo bidireccional (prioridad 1)
 
@@ -38,8 +40,8 @@ Convenciones que se mantienen en todo el proyecto:
 | 1.4 | Etiquetar, archivar y marcar | ✅ | `ETIQUETAR_CORREO`, `ARCHIVAR_CORREO`, `MARCAR_CORREO`. |
 | 1.5 | Pendientes y acciones automáticos | ✅ | `CORREO_PENDIENTES|n` → la IA extrae compromisos, responsables y fechas. |
 | 1.6 | Leer un correo completo | ✅ | `LEER_CORREO|clave` (admite número del último listado o parte del asunto/remitente). |
-| 1.8 | Correo con Outlook cerrado o el Outlook nuevo | ✅ | `modules/correo_nube.py`: Microsoft Graph con OAuth2 de **código de dispositivo** (un código, sin contraseña ni registrar apps) y botón **«Conectar correo»** en Ajustes. Token cifrado con DPAPI. |
 | 1.7 | Adjuntos de un correo | ❌ | Guardarlos en `rutas.ADJUNTOS` y analizarlos (enlaza con 0.3). |
+| 1.8 | Correo con Outlook cerrado o el Outlook nuevo | ✅ | `modules/correo_nube.py`: Microsoft Graph con OAuth2 de **código de dispositivo** (un código, sin contraseña ni registrar apps) y botón **«Conectar correo»** en Ajustes. Token cifrado con DPAPI. |
 
 *Se implementa con **dos caminos** y la app elige sola (`modules/correo.py`):
 - **Outlook de escritorio** vía COM (`pywin32`, ya en uso) cuando está instalado y abierto.
@@ -53,7 +55,7 @@ Convenciones que se mantienen en todo el proyecto:
 | # | Trabajo | Estado | Detalle |
 |---|---------|--------|---------|
 | 2.1 | Grabar y transcribir | ✅ | `modules/meeting_assistant.py` (audio del sistema + micrófono, Whisper local). |
-| 2.2 | Acta con responsables, fechas y tareas | ✅ | Plantilla fija (objetivo, puntos, acuerdos, tareas con responsable y fecha, riesgos, próxima reunión) + cabecera con título, fecha, duración y asistentes. |
+| 2.2 | Acta con responsables, fechas y tareas | ✅ | `MeetingAssistant.analizar_transcripcion`: acta con resumen ejecutivo, participantes, temas con datos concretos, decisiones, tareas con responsable/fecha/prioridad, información rescatada (cifras, fechas, versiones, sistemas), riesgos, preguntas abiertas y próxima reunión. Las grabaciones largas se analizan por trozos, y la cabecera lleva título, fecha, duración y asistentes. |
 | 2.3 | Agenda previa de la reunión | ✅ | `AGENDA_REUNION`: lee el calendario (`modules/calendario_tools.py`) y la IA redacta la agenda. |
 | 2.4 | Resumen ejecutivo y envío a asistentes | ✅ | `ENVIAR_ACTA`: correo con el acta a los asistentes del acta, a los de la reunión grabada o a los invitados del calendario; borrador salvo pedido explícito. |
 

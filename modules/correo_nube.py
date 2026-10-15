@@ -16,10 +16,10 @@ de Windows puede descifrarlo).
   python -m modules.correo_nube probar    # comprobar la conexión y listar 3 correos
   python -m modules.correo_nube salir     # olvidar la sesión guardada
 
-Por comodidad se usa por defecto un cliente público conocido ("Microsoft Office"),
-que permite conectar sin registrar nada. Si prefieres la vía 100% oficial, registra
-tu propia aplicación en Entra (Azure) y escribe su id en `correo.cliente_id` dentro
-de `config_usuario.json`; el resto funciona igual.
+Por comodidad se usa por defecto un cliente público conocido de Microsoft
+(*"Microsoft Graph Command Line Tools"*), que Microsoft Graph sí admite, así que se
+conecta sin registrar nada. Si tu organización exige una aplicación propia, regístrala
+en Entra (Azure) y escribe su id en `correo.cliente_id` dentro de `config_usuario.json`.
 
 Reglas de seguridad: ninguna acción envía correo por su cuenta. `responder` y
 `crear_borrador` dejan el mensaje en **Borradores** y solo se envía cuando el usuario
@@ -42,8 +42,11 @@ from html import unescape
 
 from modules import rutas
 
-# Cliente público conocido ("Microsoft Office") para no tener que registrar nada.
-CLIENTE_PUBLICO = "d3590ed6-52b3-4102-aeff-aad2292ab01c"
+# Cliente público conocido de Microsoft para no tener que registrar nada. Tiene que
+# estar *preautorizado para Microsoft Graph*: el de "Microsoft Office" (d3590ed6-...)
+# vale para Outlook/Exchange, pero Graph lo rechaza con AADSTS65002; este otro es el
+# que usa la propia herramienta de Microsoft para Graph y sí admite esos permisos.
+CLIENTE_PUBLICO = "14d82eec-204b-4c2f-b7e8-296a70dab67e"
 TENANT_POR_DEFECTO = "common"
 AUTORIDAD = "https://login.microsoftonline.com"
 GRAPH = "https://graph.microsoft.com/v1.0"
@@ -53,6 +56,27 @@ PERMISOS = ("offline_access "
             "https://graph.microsoft.com/Mail.ReadWrite "
             "https://graph.microsoft.com/Mail.Send "
             "https://graph.microsoft.com/User.Read")
+
+# Explicaciones propias para los errores de Microsoft que más se ven al conectar.
+# (Los códigos AADSTS vienen dentro del texto de error que devuelve Microsoft.)
+AYUDAS_ERROR = (
+    ("AADSTS65002",
+     "El cliente público usado no puede pedir Microsoft Graph: usa el que viene por "
+     "defecto o registra una aplicación propia para 'correo.cliente_id'."),
+    ("AADSTS65001",
+     "Faltan permisos consentidos: pide a un administrador de tu organización que "
+     "apruebe Mail.ReadWrite, Mail.Send y User.Read."),
+    ("AADSTS500011",
+     "La aplicación no existe en tu organización: revisa 'correo.cliente_id' y "
+     "'correo.tenant'."),
+    ("AADSTS700016",
+     "Ese 'correo.cliente_id' no está dado de alta en tu organización."),
+    ("AADSTS50020",
+     "Esa cuenta no pertenece al 'tenant' configurado: revisa 'correo.tenant'."),
+    ("AADSTS7000218",
+     "Esa aplicación no permite el flujo de código de dispositivo: en su registro de "
+     "Entra activa 'Permitir flujos de cliente público' = Sí."),
+)
 
 # Carpetas conocidas de Graph (identificadores estándar de cualquier buzón)
 BANDEJA = "inbox"
@@ -198,21 +222,42 @@ class CorreoNube:
 
     # ------------------------------------------------------------------ OAuth2 / HTTP
     @staticmethod
+    def _pista_error(texto):
+        """Pista en castellano para los errores de Microsoft más habituales (o '')."""
+        cadena = str(texto or "").upper()
+        for codigo, ayuda in AYUDAS_ERROR:
+            if codigo in cadena:
+                return ayuda
+        return ""
+
+    @staticmethod
     def _mensaje_error(texto):
-        """Saca el mensaje legible de un error de Microsoft (OAuth o Graph)."""
+        """Saca el mensaje legible de un error de Microsoft (OAuth o Graph).
+
+        Cuando reconoce un error típico de conexión (por ejemplo AADSTS65002, que
+        sale al pedir Graph con un cliente no preautorizado) añade una frase que
+        explica qué hacer.
+        """
+        base = ""
         try:
             datos = json.loads(texto or "")
         except Exception:
-            return (texto or "").strip()[:300]
-        if not isinstance(datos, dict):
-            return str(datos)[:300]
-        error = datos.get("error")
-        if isinstance(error, dict):
-            return str(error.get("message") or error.get("code") or "")[:300]
-        if isinstance(error, str):
-            detalle = str(datos.get("error_description") or "").strip()
-            return (error + (f": {detalle}" if detalle else ""))[:300]
-        return str(datos)[:300]
+            base = (texto or "").strip()
+        else:
+            if not isinstance(datos, dict):
+                base = str(datos)
+            else:
+                error = datos.get("error")
+                if isinstance(error, dict):
+                    base = str(error.get("message") or error.get("code") or "")
+                elif isinstance(error, str):
+                    detalle = str(datos.get("error_description") or "").strip()
+                    base = error + (f": {detalle}" if detalle else "")
+                else:
+                    base = str(datos)
+        base = base.strip()[:300]
+        pista = CorreoNube._pista_error(base or texto)
+        return f"{base} {pista}".strip() if pista else base
 
     def _pedir_json(self, url, metodo="POST", form=None, json_cuerpo=None, cabeceras=None):
         """Petición HTTP que devuelve JSON; lanza ErrorCorreo con un mensaje claro."""

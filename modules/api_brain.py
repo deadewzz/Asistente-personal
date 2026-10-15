@@ -7,6 +7,19 @@ from modules import rutas
 
 class APIBrain:
     MAX_MENSAJES_HISTORIAL = 30  # evita superar el límite de contexto de DeepSeek
+    MODELO = "deepseek-chat"
+    # Tope de seguridad: el contexto de DeepSeek ronda los 64k tokens (unas 120.000
+    # letras), de modo que un texto mayor se recorta antes de enviarlo.
+    MAX_CARACTERES_ANALISIS = 120000
+    # Mensaje de sistema de los análisis largos (actas, informes): aquí se pide un
+    # documento completo en Markdown y no se ejecuta ninguna acción.
+    SISTEMA_ANALISIS = (
+        "Eres Jarvis, un asistente experto en analizar información y redactar "
+        "documentos de trabajo. Escribes en español, en Markdown, con datos concretos "
+        "y sin relleno, y te ciñes a la información que se te da: no inventas nombres, "
+        "cifras ni fechas. Devuelves SOLO el documento pedido, sin saludos, sin "
+        "comentarios y sin comandos [ACCION: ...]."
+    )
     # Marca de un comando interno de acción ('[ACCION: ...]') dentro de la respuesta.
     RE_MARCA_ACCION = re.compile(r"\[\s*ACCION\s*:\s*", re.IGNORECASE)
     # Adornos que pueden envolver al comando (backticks, paréntesis, punto final,
@@ -94,6 +107,11 @@ class APIBrain:
                     "- Iniciar pomodoro: [ACCION: POMODORO|25] / detener: [ACCION: DETENER_POMODORO]\n"
                     "- Perfil de entorno: [ACCION: PERFIL|desarrollo] / [ACCION: PERFIL|oficina] / [ACCION: PERFIL|cierre]\n"
                     "- Buscar archivos: [ACCION: BUSCAR_ARCHIVOS|nombre]\n"
+                    "- Listar el contenido de una carpeta (OneDrive incluido): [ACCION: LISTAR_CARPETA|C:\\ruta\\carpeta] (sin ruta se lista la carpeta principal de OneDrive)\n"
+                    "- Buscar archivos DENTRO de una carpeta concreta: [ACCION: BUSCAR_EN_CARPETA|C:\\ruta\\carpeta;;nombre]\n"
+                    "- Mover archivos entre carpetas: [ACCION: MOVER_ARCHIVOS|C:\\...\\a.txt;C:\\...\\b.pdf;;C:\\...\\destino] (rutas separadas por ';' y, tras ';;', la carpeta destino). Primero enseña qué vas a mover SIN ';;mover'; añade ';;mover' AL FINAL solo cuando el usuario lo confirme: [ACCION: MOVER_ARCHIVOS|origen;;destino;;mover]\n"
+                    "- Copiar archivos entre carpetas: [ACCION: COPIAR_ARCHIVOS|C:\\...\\a.txt;;C:\\...\\destino] (misma idea que mover; ';;copiar' para confirmar)\n"
+                    "- Clasificar archivos de SharePoint/OneDrive según una regla (usa tu sesión de Brave, sin Graph): [ACCION: CLASIFICAR_ARCHIVOS|url_origen;;url_destino;;regla de clasificación]\n"
                     "- Leer correos de Outlook: [ACCION: LEER_CORREOS|5] (los numera para que luego puedas responder o mover el que el usuario diga)\n"
                     "- Crear borrador de correo: [ACCION: CREAR_BORRADOR|correo;;asunto;;cuerpo]\n"
                     "- Resumen del correo (criterio opcional: 'hoy', 'no leídos', un número): [ACCION: RESUMEN_CORREOS|hoy], [ACCION: RESUMEN_CORREOS|no leídos], [ACCION: RESUMEN_CORREOS|10]\n"
@@ -194,7 +212,7 @@ class APIBrain:
 
         try:
             response = self.client.chat.completions.create(
-                model="deepseek-chat",
+                model=self.MODELO,
                 messages=self.historial,
                 stream=False
             )
@@ -327,6 +345,62 @@ class APIBrain:
     def limpiar_historial(self):
         self.historial = [self.historial[0]]
 
+    def analizar_documento(self, prompt, max_tokens=4000, temperature=0.2):
+        """Redacta un documento largo (acta, informe, propuesta) con la IA.
+
+        A diferencia de `procesar_mensaje` (chat con comandos) y de `analizar`
+        (respuestas de tres frases), aquí:
+        - el texto no entra en el historial de la conversación, así que una
+          transcripción larga no ensucia el chat ni lo desborda,
+        - no se limita la brevedad y se piden hasta `max_tokens` de salida,
+        - no se interpretan comandos de acción, de modo que el Markdown (tablas,
+          corchetes) llega intacto.
+        Devuelve el texto generado, o "" si no hay IA configurada o falla la llamada.
+        """
+        if not self.client:
+            self.api_key = self._cargar_api_key()
+            if self.api_key:
+                self.client = OpenAI(api_key=self.api_key, base_url="https://api.deepseek.com")
+            else:
+                print("No hay API Key configurada: no puedo generar el documento.")
+                return ""
+
+        contenido = str(prompt or "").strip()
+        if not contenido:
+            return ""
+        if len(contenido) > self.MAX_CARACTERES_ANALISIS:
+            print(f"El texto es demasiado largo ({len(contenido)} caracteres): se recorta.")
+            contenido = contenido[:self.MAX_CARACTERES_ANALISIS]
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.MODELO,
+                messages=[
+                    {"role": "system", "content": self.SISTEMA_ANALISIS},
+                    {"role": "user", "content": contenido},
+                ],
+                max_tokens=int(max_tokens),
+                temperature=float(temperature),
+                stream=False,
+            )
+            return self._limpiar_cerco_markdown(response.choices[0].message.content)
+        except Exception as e:
+            print(f"Error generando el documento con la IA: {e}")
+            return ""
+
+    @staticmethod
+    def _limpiar_cerco_markdown(texto):
+        """Quita el bloque de código con el que a veces el modelo envuelve el documento."""
+        limpio = str(texto or "").strip()
+        if not limpio.startswith("```"):
+            return limpio
+        lineas = limpio.splitlines()
+        if lineas and lineas[0].startswith("```"):
+            lineas = lineas[1:]
+        if lineas and lineas[-1].strip().startswith("```"):
+            lineas = lineas[:-1]
+        return "\n".join(lineas).strip()
+
     def analizar(self, contexto):
         """Envía un contexto (datos recopilados por el sistema) para que el asistente lo procese."""
         if not self.client:
@@ -335,3 +409,71 @@ class APIBrain:
             "Responde de forma breve y clara en español (máximo 3 frases) a lo siguiente:\n\n" + str(contexto)
         )
         return texto
+
+    def clasificar_archivos(self, nombres, regla):
+        """Devuelve un plan [(nombre, subcarpeta)] para clasificar archivos según 'regla'.
+
+        Llama a la IA pidiendo una línea por archivo con el formato 'nombre|carpeta'.
+        Si no hay API Key o falla la llamada, devuelve None (el llamador decide).
+        """
+        if not self.client:
+            self.api_key = self._cargar_api_key()
+            if self.api_key:
+                self.client = OpenAI(api_key=self.api_key,
+                                     base_url="https://api.deepseek.com")
+            else:
+                return None
+        if not nombres:
+            return []
+        prompt = (
+            "Vas a clasificar archivos en subcarpetas según la regla del usuario. "
+            "Responde SOLO con una línea por archivo, en el formato exacto:\n"
+            "nombre_del_archivo|carpeta\n"
+            "La 'carpeta' es el nombre de la subcarpeta de destino (sin barras). "
+            "Si un archivo no encaja en ninguna, usa 'Otros'.\n"
+            "No añadas texto, ni títulos, ni listas, ni bloques de código.\n\n"
+            "REGLA:\n" + str(regla or "") + "\n\n"
+            "ARCHIVOS:\n" + "\n".join(nombres)
+        )
+        try:
+            respuesta = self.client.chat.completions.create(
+                model=self.MODELO,
+                messages=[
+                    {"role": "system",
+                     "content": "Eres un clasificador de archivos. Responde SOLO con "
+                                "una línea por archivo en el formato 'nombre_archivo|carpeta'."},
+                    {"role": "user", "content": prompt},
+                ],
+                max_tokens=600, temperature=0, stream=False,
+            )
+            texto = respuesta.choices[0].message.content
+        except Exception as e:
+            print(f"Error clasificando archivos con la IA: {e}")
+            return None
+        asignadas = self._parsear_clasificacion(texto, nombres)
+        return [(n, asignadas.get(n, "Otros")) for n in nombres]
+
+    @staticmethod
+    def _parsear_clasificacion(texto, nombres):
+        """Convierte la salida 'nombre|carpeta' de la IA en {nombre: carpeta}."""
+        resultado = {}
+        nombres_bajo = {n.lower(): n for n in nombres}
+        for linea in (texto or "").splitlines():
+            linea = linea.strip().strip("-*•").strip()
+            if not linea:
+                continue
+            partes = re.split(r"\s*(?:\||->|→|\t)\s*", linea, maxsplit=1)
+            nombre = partes[0].strip().strip('"`')
+            carpeta = partes[1].strip().strip('"`') if len(partes) > 1 else ""
+            if not nombre or not carpeta:
+                continue
+            clave = nombre.lower()
+            objetivo = nombres_bajo.get(clave)
+            if objetivo is None:
+                for real in nombres:
+                    if real.lower() == clave or real.lower().startswith(clave):
+                        objetivo = real
+                        break
+            if objetivo is not None and objetivo not in resultado:
+                resultado[objetivo] = carpeta
+        return resultado

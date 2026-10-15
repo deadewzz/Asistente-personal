@@ -6,6 +6,7 @@ import threading
 import unicodedata
 from datetime import datetime
 
+import inspect
 import numpy as np
 
 from modules import rutas
@@ -23,6 +24,11 @@ class MeetingAssistant:
     APPS_REUNION = ["Teams.exe", "Zoom.exe", "CptHost.exe", "CiscoWebex.exe", "webex.exe", "GoogleMeet.exe"]
     PATRONES_TITULO = ["reunión", "reunion", "meeting", "llamada", "call", "conference", "videollamada"]
     WHISPER_MODEL = "small"
+    # Análisis de la reunión: una grabación de una hora pasa de las 40.000 letras de
+    # transcripción, así que se analiza por trozos y luego se une todo en un acta.
+    LIMITE_TROZO = 16000
+    MAX_TOKENS_NOTAS = 1200
+    MAX_TOKENS_ACTA = 4000
 
     def __init__(self, config_path=rutas.CONFIG_USUARIO, notas_dir=rutas.REUNIONES):
         self.config_path = config_path
@@ -209,12 +215,14 @@ class MeetingAssistant:
         if audio is None or len(audio) < 16000:
             self._alerta("No se grabó audio suficiente.")
             return None
+        # La duración forma parte de la ficha que recibe la IA al analizar la reunión.
+        self._meta["duracion"] = duracion
         self._alerta("Procesando la reunión...")
         transcripcion = self._transcribir(audio)
         if not transcripcion:
             self._alerta("No pude transcribir la reunión.")
             return None
-        acta = self._resumir(transcripcion)
+        acta = self._resumir(transcripcion, self._meta)
         ruta = self.guardar_acta(transcripcion, acta, duracion=duracion)
         nombre = os.path.basename(ruta) if ruta else ""
         self._alerta(f"Acta de la reunión guardada ({nombre}). "
@@ -231,21 +239,64 @@ class MeetingAssistant:
                 return ""
         try:
             segs, _ = self._whisper_model.transcribe(
-                audio, language="es", beam_size=1,
-                vad_filter=True, without_timestamps=True, condition_on_previous_text=False,
+                audio, language="es", beam_size=5,
+                vad_filter=True, without_timestamps=True,
+                condition_on_previous_text=True,
+                initial_prompt=self._pista_vocabulario() or None,
             )
             return " ".join(s.text for s in segs).strip()
         except Exception as e:
             print(f"Error transcribiendo: {e}")
             return ""
 
-    def _resumir(self, transcripcion):
-        if self.on_resumen:
+    def _pista_vocabulario(self):
+        """Texto de apoyo para Whisper con el asunto y los nombres de la reunión.
+
+        Darle el contexto antes de transcribir mejora los nombres propios y las
+        siglas, que son justo los datos que después rescata el acta.
+        """
+        datos = self._meta or {}
+        partes = []
+        titulo = str(datos.get("titulo") or "").strip()
+        if titulo:
+            partes.append(f"Reunión sobre {titulo}.")
+        nombres = [self._nombre_desde_correo(c) for c in (datos.get("asistentes") or [])]
+        nombres = [n for n in nombres if n]
+        if nombres:
+            partes.append("Participan: " + ", ".join(nombres) + ".")
+        # Whisper recomienda una pista corta: se recorta por si los invitados son muchos.
+        return " ".join(partes)[:600]
+
+    @staticmethod
+    def _nombre_desde_correo(correo):
+        """'ana.gomez@acme.com' -> 'Ana Gomez' (nombre para la pista de Whisper)."""
+        local = str(correo or "").strip().split("@")[0]
+        palabras = [p for p in re.split(r"[._\-+]+", local) if p and not p.isdigit()]
+        return " ".join(p.capitalize() for p in palabras)
+
+    def _resumir(self, transcripcion, meta=None):
+        """Pide a la GUI el acta de una transcripción (callback 'on_resumen').
+
+        La GUI recibe (transcripción, metadatos de la reunión) y devuelve el Markdown
+        del acta. Si el callback es de los antiguos y solo acepta la transcripción, se
+        le llama con un solo argumento para no romperlo.
+        """
+        if not self.on_resumen:
+            return ""
+        texto = str(transcripcion or "")
+        datos = dict(meta or {})
+        try:
+            admitir_meta = True
             try:
-                return self.on_resumen(transcripcion)
-            except Exception as e:
-                print(f"Error resumiendo: {e}")
-        return ""
+                inspect.signature(self.on_resumen).bind(texto, datos)
+            except TypeError:
+                admitir_meta = False
+            if admitir_meta:
+                return self.on_resumen(texto, datos)
+            return self.on_resumen(texto)
+        except Exception as e:
+            print(f"Error resumiendo: {e}")
+            return ""
 
     def guardar_acta(self, transcripcion, acta, duracion=0, meta=None):
         """Escribe el acta de la reunión (cabecera + acta de la IA + transcripción).
@@ -284,6 +335,183 @@ class MeetingAssistant:
             else "- **Asistentes:** no identificados",
         ]
         return "\n".join(lineas) + "\n"
+
+    # ---------------- Análisis de la reunión (acta) ----------------
+    # Secciones fijas del acta: el orden y los títulos no cambian para que todas las
+    # actas se lean igual (y para que 'rehacer acta' dé el mismo formato).
+    SECCIONES_ACTA = (
+        ("Resumen ejecutivo",
+         "4-6 viñetas con lo esencial: qué se trató, qué se decidió y qué queda "
+         "pendiente."),
+        ("Participantes",
+         "quién estaba y con qué papel o equipo, si se menciona."),
+        ("Temas tratados",
+         "un '### ' por tema y debajo 2-4 viñetas con los datos concretos que se "
+         "aportaron, las posturas y los desacuerdos."),
+        ("Decisiones",
+         "una viñeta por decisión, con el motivo y quién la tomó."),
+        ("Tareas y compromisos",
+         "tabla Markdown con las columnas: Tarea | Responsable | Fecha | Prioridad."),
+        ("Información rescatada",
+         "los datos que valen después de la reunión: cifras, fechas, versiones, "
+         "precios, rutas de archivos, sistemas, proyectos y dependencias."),
+        ("Riesgos y bloqueos",
+         "una viñeta por riesgo, con su impacto y qué haría falta para desbloquearlo."),
+        ("Preguntas abiertas",
+         "lo que quedó sin decidir o sin respuesta."),
+        ("Próxima reunión",
+         "fecha, hora y temas, si se mencionan."),
+    )
+
+    @staticmethod
+    def descripcion_reunion(meta=None):
+        """Ficha de la reunión (título, fecha, duración y asistentes) para el prompt."""
+        datos = dict(meta or {})
+        lineas = []
+        titulo = str(datos.get("titulo") or "").strip()
+        if titulo:
+            lineas.append(f"- Título: {titulo}")
+        inicio = datos.get("inicio")
+        if isinstance(inicio, datetime):
+            lineas.append(f"- Fecha: {inicio.strftime('%Y-%m-%d %H:%M')}")
+        elif datos.get("fecha"):
+            lineas.append(f"- Fecha: {datos['fecha']}")
+        duracion = str(datos.get("duracion") or "").strip()
+        if duracion:
+            lineas.append(f"- Duración: {duracion if 'min' in duracion else duracion + ' min'}")
+        asistentes = [str(a).strip() for a in (datos.get("asistentes") or []) if str(a).strip()]
+        if asistentes:
+            # El nombre junto al correo ayuda a la IA a reconocer quién habla.
+            nombres = []
+            for correo in asistentes:
+                nombre = MeetingAssistant._nombre_desde_correo(correo)
+                nombres.append(f"{nombre} <{correo}>" if nombre and "@" in correo else correo)
+            lineas.append("- Asistentes (según el calendario): " + ", ".join(nombres))
+        return "\n".join(lineas)
+
+    @classmethod
+    def trocear(cls, texto, limite=None):
+        """Parte una transcripción larga en trozos que cortan en fin de frase.
+
+        Ninguna parte de la reunión se queda fuera del análisis por ser la grabación
+        larga: cada trozo se analiza por separado y luego se unen las notas. Si la
+        transcripción viene sin puntuación, el trozo se corta por palabras.
+        """
+        limpio = " ".join(str(texto or "").split())
+        if not limpio:
+            return []
+        limite = int(limite or cls.LIMITE_TROZO)
+        if len(limpio) <= limite:
+            return [limpio]
+        trozos = []
+        actual = ""
+        for frase in re.split(r"(?<=[.!?…])\s+", limpio):
+            for parte in cls._partir_en_palabras(frase, limite):
+                if actual and len(actual) + len(parte) + 1 > limite:
+                    trozos.append(actual)
+                    actual = ""
+                actual = f"{actual} {parte}".strip()
+        if actual:
+            trozos.append(actual)
+        return trozos
+
+    @staticmethod
+    def _partir_en_palabras(texto, limite):
+        """Divide un texto sin puntuación en trozos que no pasen del límite."""
+        texto = str(texto or "").strip()
+        if len(texto) <= limite:
+            return [texto] if texto else []
+        partes = []
+        actual = ""
+        for palabra in texto.split(" "):
+            if actual and len(actual) + len(palabra) + 1 > limite:
+                partes.append(actual)
+                actual = palabra
+            else:
+                actual = f"{actual} {palabra}".strip()
+        if actual:
+            partes.append(actual)
+        return partes
+
+    @classmethod
+    def prompt_notas(cls, trozo, numero=1, total=1, meta=None):
+        """Prompt para exprimir un trozo de la transcripción (reuniones largas)."""
+        ficha = cls.descripcion_reunion(meta)
+        cabecera = f"DATOS DE LA REUNIÓN:\n{ficha}\n\n" if ficha else ""
+        return (
+            cabecera
+            + f"Extrae TODA la información útil de este FRAGMENTO {numero} de {total} "
+            "de la transcripción de una reunión: temas, datos concretos (cifras, "
+            "fechas, nombres, sistemas, versiones), decisiones, tareas con su "
+            "responsable y su fecha, riesgos y preguntas abiertas.\n"
+            "Devuélvelo en español como viñetas cortas de Markdown agrupadas por tema. "
+            "No inventes nada que no esté en el fragmento; si algo no aparece, no lo "
+            "menciones y no pidas más información.\n\n"
+            "FRAGMENTO:\n" + str(trozo or "").strip()
+        )
+
+    @classmethod
+    def prompt_acta(cls, transcripcion="", meta=None, notas=""):
+        """Prompt del acta final (a partir de la transcripción o de las notas previas)."""
+        notas = str(notas or "").strip()
+        cuerpo = notas or str(transcripcion or "").strip()
+        fuente = "NOTAS EXTRAÍDAS DE LA GRABACIÓN" if notas else "TRANSCRIPCIÓN"
+        ficha = cls.descripcion_reunion(meta)
+        estructura = "\n".join(f"## {titulo}\n{detalle}"
+                               for titulo, detalle in cls.SECCIONES_ACTA)
+        return (
+            "Actúa como analista de reuniones. Con la información del final escribe el "
+            "ACTA de la reunión en Markdown y en español, rescatando toda la información "
+            "útil y verificable.\n\n"
+            + (f"DATOS DE LA REUNIÓN:\n{ficha}\n\n" if ficha else "")
+            + "ESTRUCTURA (respeta estos encabezados y este orden):\n"
+            + estructura + "\n\n"
+            "REGLAS:\n"
+            "- No inventes nombres, cifras, fechas ni datos: lo que no se mencione queda "
+            "como 'no mencionado' (en las tablas, en su celda).\n"
+            "- Frases cortas y concretas: usa viñetas y tablas, no párrafos largos.\n"
+            "- Corrige los errores evidentes de la transcripción de voz, pero no cambies "
+            "nombres propios, cifras ni fechas.\n"
+            "- No repitas la transcripción ni la resumas línea a línea, y no escribas "
+            "nada antes del primer '##'.\n\n"
+            f"{fuente}:\n" + cuerpo
+        )
+
+    def analizar_transcripcion(self, transcripcion, meta=None, llamar_ia=None):
+        """Escribe el acta de una reunión rescatando la información útil.
+
+        'llamar_ia(prompt, max_tokens=...)' es el motor de lenguaje del asistente (lo
+        pone la GUI); si no se pasa, se recurre al callback 'on_resumen' de siempre.
+        Las grabaciones largas se analizan por trozos para que nada quede fuera y al
+        final las notas se funden en un acta única.
+        """
+        texto = str(transcripcion or "").strip()
+        if not texto:
+            return ""
+        datos = dict(meta or self._meta or {})
+        if llamar_ia is None:
+            return self._resumir(texto, datos)
+        trozos = self.trocear(texto)
+        notas = []
+        if len(trozos) > 1:
+            for numero, trozo in enumerate(trozos, 1):
+                try:
+                    parcial = llamar_ia(self.prompt_notas(trozo, numero, len(trozos), datos),
+                                        max_tokens=self.MAX_TOKENS_NOTAS)
+                except Exception as e:
+                    print(f"Error analizando el trozo {numero}: {e}")
+                    parcial = ""
+                if str(parcial or "").strip():
+                    notas.append(str(parcial).strip())
+        if notas:
+            prompt = self.prompt_acta(meta=datos, notas="\n\n".join(notas))
+        else:
+            prompt = self.prompt_acta(transcripcion=texto, meta=datos)
+        try:
+            return str(llamar_ia(prompt, max_tokens=self.MAX_TOKENS_ACTA) or "").strip()
+        except Exception as e:
+            print(f"Error generando el acta: {e}")
+            return ""
 
     # ---------------- Actas guardadas ----------------
     def _archivos(self):
@@ -432,7 +660,10 @@ class MeetingAssistant:
                     "puedo rehacer el acta.")
         if self.on_resumen is None:
             return "No tengo la IA disponible ahora mismo para rehacer el acta."
-        nueva = self._resumir(acta["transcripcion"])
+        nueva = self._resumir(acta["transcripcion"],
+                              {"titulo": acta["titulo"], "fecha": acta["fecha"],
+                               "duracion": acta["duracion"],
+                               "asistentes": acta["asistentes"]})
         if not str(nueva or "").strip():
             return "La IA no devolvió contenido, así que el acta se queda como estaba."
         # Se conserva la cabecera (título, fecha, asistentes) y la transcripción

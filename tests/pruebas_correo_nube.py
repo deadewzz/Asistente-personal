@@ -384,6 +384,19 @@ def pruebas_utilidades():
     comprobar(CorreoNube._limpiar("uno    dos", 100) == "uno dos", "se colapsan espacios")
     comprobar(CorreoNube._limpiar("x" * 30, 10).endswith("..."), "se recorta el extracto")
     comprobar(CorreoNube()._cliente_id() == CLIENTE_PUBLICO, "cliente por defecto")
+    error_ms = json.dumps({"error": "access_denied",
+                           "error_description": "AADSTS65002: Consent between first "
+                                                "party application and Microsoft Graph "
+                                                "must be configured via preauthorization"})
+    comprobar("AADSTS65002" in CorreoNube._mensaje_error(error_ms),
+              "el mensaje conserva el código AADSTS de Microsoft")
+    comprobar("Graph" in CorreoNube._pista_error(error_ms),
+              "AADSTS65002 se explica con una pista útil")
+    comprobar(CorreoNube._pista_error("otro error cualquiera") == "",
+              "sin código conocido no se añade pista")
+    comprobar(CLIENTE_PUBLICO != "d3590ed6-52b3-4102-aeff-aad2292ab01c",
+              "el cliente por defecto no es el de Office (Graph lo rechaza con "
+              "AADSTS65002)")
 
 
 def pruebas_sesion_compartida():

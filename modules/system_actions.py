@@ -18,6 +18,9 @@ from modules.meeting_assistant import MeetingAssistant
 from modules.calendario_tools import CalendarioTools
 from modules.preventa_tools import PreventaTools
 from modules.cloud_matrix import CloudMatrix
+from modules.archivos import Explorador
+from modules.sharepoint import SharePoint
+from modules import navegador_cdp
 from modules import rutas
 
 try:
@@ -65,6 +68,8 @@ class SystemActions:
         self.calendario = CalendarioTools()
         self.preventa = PreventaTools()
         self.cloud = CloudMatrix(config_path)
+        self.archivos = Explorador()
+        self.sharepoint = SharePoint()
 
     def ejecutar_comando(self, comando_str):
         if not comando_str:
@@ -144,6 +149,38 @@ class SystemActions:
             if not archivos:
                 return f"No encontré archivos que coincidan con '{parametro}'."
             return "__CONTEXTO__" + "Lista brevemente estos archivos encontrados:\n" + "\n".join(archivos)
+        elif accion == "LISTAR_CARPETA":
+            return self.archivos.listar_texto(parametro or "")
+        elif accion == "BUSCAR_EN_CARPETA":
+            partes = (parametro_libre or "").split(";;", 1)
+            carpeta = partes[0].strip() if partes else ""
+            nombre = partes[1].strip() if len(partes) > 1 else ""
+            hallazgos = self.archivos.buscar(carpeta, nombre)
+            if not hallazgos:
+                return (f"No encontré '{nombre or 'archivos'}' dentro de "
+                        f"{carpeta or 'esa carpeta'}.")
+            return ("__CONTEXTO__"
+                    "Estos son los archivos encontrados (di dónde están y, si el "
+                    "usuario quiere, propón moverlos o copiarlos a otra carpeta):\n"
+                    + "\n".join(hallazgos))
+        elif accion == "MOVER_ARCHIVOS":
+            partes = (parametro_libre or "").split(";;", 2)
+            origen = partes[0].strip() if partes else ""
+            destino = partes[1].strip() if len(partes) > 1 else ""
+            modo = partes[2].strip() if len(partes) > 2 else ""
+            return self.archivos.resumen(
+                self.archivos.mover(origen, destino,
+                                    confirmado=self._quiere_confirmar(modo)))
+        elif accion == "COPIAR_ARCHIVOS":
+            partes = (parametro_libre or "").split(";;", 2)
+            origen = partes[0].strip() if partes else ""
+            destino = partes[1].strip() if len(partes) > 1 else ""
+            modo = partes[2].strip() if len(partes) > 2 else ""
+            return self.archivos.resumen(
+                self.archivos.copiar(origen, destino,
+                                     confirmado=self._quiere_confirmar(modo)))
+        elif accion == "CLASIFICAR_ARCHIVOS":
+            return self._clasificar_archivos(parametro_libre or "")
         elif accion == "LEER_CORREOS":
             return ("__CONTEXTO__"
                     "Resume estos correos recientes, los importantes primero (máximo 6 "
@@ -295,6 +332,59 @@ class SystemActions:
         """
         return str(modo or "").strip().lower() in (
             "enviar", "envia", "envía", "send", "mandar", "manda", "ya", "si", "sí")
+
+    @staticmethod
+    def _quiere_confirmar(modo):
+        """True si la acción de archivos pide ejecutarse de verdad.
+
+        Igual que con el correo (';;enviar'), mover/copiar solo se ejecuta cuando
+        el usuario lo confirma explícitamente (';;mover' / ';;copiar' o sinónimos);
+        sin eso, solo se muestra la vista previa de lo que se haría.
+        """
+        return str(modo or "").strip().lower() in (
+            "mover", "copiar", "si", "sí", "ya", "confirmar", "confirmado",
+            "adelante", "dale", "ok", "hazlo")
+
+    def _clasificar_archivos(self, parametro):
+        """CLASIFICAR_ARCHIVOS|origen_url;;destino_url;;regla
+
+        Lista los archivos de la URL de origen (SharePoint/OneDrive) con la
+        **sesión real de Brave** (controlado por CDP; el navegador firma las
+        peticiones), los clasifica según la regla con la IA y los mueve a
+        subcarpetas de la URL de destino. Todo sin Microsoft Graph.
+
+        Si Brave no está abierto se abre; si lo está sin depuración, se
+        reinicia con aviso (las cookies de sesión de SharePoint son persistentes,
+        así que no se pierde el inicio de sesión).
+        """
+        partes = (parametro or "").split(";;", 2)
+        origen = partes[0].strip() if partes else ""
+        destino = partes[1].strip() if len(partes) > 1 else ""
+        regla = partes[2].strip() if len(partes) > 2 else ""
+        if not origen or not destino:
+            return ("Necesito la URL de origen y la de destino: "
+                    "CLASIFICAR_ARCHIVOS|origen;;destino;;regla")
+        try:
+            nota = self.sharepoint.asegurar_navegador(origen)
+            archivos = self.sharepoint.listar_archivos(origen)
+        except Exception as e:
+            return (f"No pude acceder a la carpeta de SharePoint.\n{e}")
+        if not archivos:
+            return f"No hay archivos en {origen}."
+        nombres = [a["nombre"] for a in archivos]
+        clasificador = getattr(self.sharepoint, "on_clasificar", None)
+        if clasificador:
+            plan = clasificador(nombres, regla)
+            if plan is None:
+                return "No pude clasificar: configura tu API Key (DeepSeek) primero."
+        else:
+            plan = self.sharepoint.clasificar_naive(nombres, regla)
+        try:
+            resumen = self.sharepoint.clasificar_y_mover(origen, destino, plan)
+        except Exception as e:
+            return f"Error moviendo los archivos: {e}"
+        aviso = "" if nota.startswith("Brave ya estaba") else f"{nota}\n"
+        return aviso + resumen
 
     # ------------------------------------------------------------------ Reuniones, actas y calendario
     def _listar_reuniones(self, parametro=None):
@@ -778,15 +868,8 @@ class SystemActions:
             webbrowser.open(url)
 
     def _ruta_brave(self):
-        candidatos = [
-            r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
-            r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
-            os.path.expandvars(r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe"),
-        ]
-        for r in candidatos:
-            if os.path.exists(r):
-                return r
-        return None
+        """Ruta de brave.exe (o None si no está instalado)."""
+        return navegador_cdp.ruta_brave() or None
 
     def _url_busqueda(self, consulta, plataforma=None):
         q = urllib.parse.quote(consulta)

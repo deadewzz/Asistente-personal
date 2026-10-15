@@ -24,6 +24,8 @@ buscar en la web y mucho más.
 - Historial de conversación por sesión (archivos `.md` en la carpeta de Jarvis).
 - Selección y exportación de mensajes.
 - Adjuntos de imágenes/texto y detección de rutas y URLs clicables.
+- Mini-explorador de archivos (botón 📁 del chat): navegar OneDrive y carpetas,
+  buscar y **mover/copiar** archivos de una carpeta a otra.
 
 ### 🧠 Inteligencia
 - Cerebro basado en **DeepSeek** (API compatible con OpenAI).
@@ -42,6 +44,16 @@ buscar en la web y mucho más.
 - **Pomodoro**, **perfiles** de entorno y **búsqueda de archivos**.
 - **Clima** y **briefing** diario.
 - **Crear documentos** (`.txt`, `.md`, `.csv`, `.docx`, `.pdf`).
+- **Clasificar archivos de SharePoint/OneDrive** según una regla, usando tu sesión
+  de Brave (sin Microsoft Graph): el asistente controla Brave por CDP (DevTools),
+  así que es el propio navegador el que firma las peticiones. Si Brave estaba
+  cerrado lo abre, y si estaba abierto sin acceso de depuración lo reinicia (no
+  pierdes el inicio de sesión). Puedes pegar la dirección tal cual te la copia
+  SharePoint, incluida la de la vista (`.../Oportunidad/Forms/AllItems.aspx?
+  viewid=...&FolderCTID=...`): el asistente se queda con la carpeta de la que
+  cuelga. Nunca pisa un archivo que ya exista en el destino (te avisa y lo deja
+  donde estaba) y, si no puede comprobar el destino (por ejemplo, sin permiso),
+  tampoco lo mueve: antes no mover que pisar.
 
 ### 📧 Correo y reuniones
 - **Leer y resumir el correo** (Outlook de escritorio o, cuando no está, el **Outlook
@@ -53,10 +65,13 @@ buscar en la web y mucho más.
   **Borradores**; solo se envía si se lo pides explícitamente.
 - **Etiquetar** (categorías de Outlook), **archivar** en una carpeta, **marcar**
   leído/no leído y **eliminar** (a Elementos eliminados).
-- **Grabar reuniones** (audio del sistema) y generar el **acta** al terminar:
-  objetivo, puntos tratados, acuerdos, tareas con responsable y fecha, riesgos y
-  próxima reunión, con el título, la fecha, la duración y los asistentes de la
-  reunión del calendario (si Jarvis puede leerlo).
+- **Grabar reuniones** (audio del sistema) y generar el **acta** al terminar con un
+  análisis que rescata la información útil: resumen ejecutivo, participantes, temas
+  con sus datos concretos, decisiones, tareas con responsable/fecha/prioridad,
+  información rescatada (cifras, fechas, versiones, sistemas), riesgos, preguntas
+  abiertas y próxima reunión. La reunión se contextualiza con el título, la fecha,
+  la duración y los asistentes del calendario (si Jarvis puede leerlo), y las
+  grabaciones largas se analizan por trozos para que no se pierda nada.
 - **Actas guardadas**: pídele «mis reuniones» para verlas numeradas, «lee el acta
   de la reunión 2» para que te la resuma y «rehaz el acta» para regenerarla desde
   la transcripción.
@@ -201,6 +216,7 @@ pip install -r requirements.txt
    - Uso: copia los datos (columnas separadas por tabulador, `;` o `,`) y pide
      «llena la matriz de la nube». También puedes usar `[ACCION: MATRIZ_EXCEL]` o
      `[ACCION: MATRIZ_AZURE]` para un solo destino.
+
 4. (Muy recomendado) **Conectar el correo** (para el Outlook nuevo o con Outlook
    cerrado). Abre la pestaña *Ajustes* y pulsa **«Conectar correo»**: Jarvis te
    muestra un código en la ventana, abre solo la web de Microsoft y tú escribes ahí
@@ -222,15 +238,16 @@ pip install -r requirements.txt
            "token": "<token cifrado>",
            "cifrado": true,
            "cuenta": "tu.correo@empresa.com",
-           "cliente_id": "d3590ed6-52b3-4102-aeff-aad2292ab01c",
+           "cliente_id": "14d82eec-204b-4c2f-b7e8-296a70dab67e",
            "tenant": "common"
        }
    }
    ```
-   > Se usa un cliente público conocido de Microsoft (*"Microsoft Office"*), así que
-   > no hay que crear una app en Azure. Si tu empresa exige una app propia, cambia
-   > `cliente_id` (y `tenant` si hay un inquilino concreto) con los mismos permisos.
-
+   > Se usa un cliente público de Microsoft preautorizado para Graph (*"Microsoft
+   > Graph Command Line Tools"*), así que no hay que crear ninguna app en Azure. Si tu
+   > empresa exige una app propia, cambia `cliente_id` (y `tenant` si hay un inquilino
+   > concreto) por la tuya, con los mismos permisos. El cliente de *Office* (`d3590ed6-…`)
+   > no sirve para Graph: Microsoft lo rechaza con el error `AADSTS65002`.
 
 > ⚠️ El archivo `.env` y `config/config_usuario.json` están en `.gitignore` porque
 > pueden contener tu clave de API. **Nunca** los subas al repositorio.
@@ -269,6 +286,10 @@ python main.py
   | «Manda el acta del 2 a ana@empresa.com» | `[ACCION: ENVIAR_ACTA|ana@empresa.com;;2;;enviar]` |
   | «Prepara la agenda de mi próxima reunión» | `[ACCION: AGENDA_REUNION]` |
   | «Llena la matriz de la nube» | `[ACCION: MATRIZ_NUBE]` |
+   | «Lista la carpeta de OneDrive» | `[ACCION: LISTAR_CARPETA|C:\Users\tu\OneDrive\Proyectos]` |
+   | «Busca facturas en Proyectos» | `[ACCION: BUSCAR_EN_CARPETA|C:\...\Proyectos;;factura]` |
+   | «Mueve factura.pdf a Pagadas» | `[ACCION: MOVER_ARCHIVOS|C:\...\factura.pdf;;C:\...\Pagadas;;mover]` |
+   | «Clasifica esta carpeta en subcarpetas por tipo» | `[ACCION: CLASIFICAR_ARCHIVOS|url_origen;;url_destino;;regla]` |
 
 ---
 
@@ -282,6 +303,7 @@ Asistente/
 ├── requirements.txt
 ├── .env.example            # Plantilla de variables de entorno
 ├── modules/
+│   ├── archivos.py         # Explorador local: listar, buscar, mover y copiar archivos
 │   ├── api_brain.py        # Cerebro LLM (DeepSeek) y reglas permanentes
 │   ├── voice_engine.py     # Reconocimiento de voz (Google / Whisper)
 │   ├── voice_output.py     # Síntesis de voz (edge-tts / pyttsx3)
@@ -297,17 +319,18 @@ Asistente/
 │   ├── cloud_matrix.py     # Matriz en la nube (Excel + Azure DevOps)
 │   ├── dev_tools.py        # Commits de Git y comandos de terminal
 │   ├── ocr_engine.py       # OCR (Tesseract / RapidOCR)
+│   └── rutas.py            # Rutas centralizadas de la carpeta de Jarvis
 ├── tests/
 │   ├── pruebas_correo_nube.py    # Pruebas del correo en la nube (Graph simulado)
 │   ├── pruebas_correo_en_vivo.py # Comprobación real contra Microsoft (sin credenciales)
 │   └── pruebas_gui_correo.py     # Pruebas de la sección de correo de la ventana
-│   └── rutas.py            # Rutas centralizadas de la carpeta de Jarvis
 └── assets/
     ├── plantillas/         # Plantillas .pptx corporativas
     └── tools/tessdata/     # Modelos de idioma de Tesseract (spa/eng)
 ```
 
 ---
+
 ## 🧪 Pruebas
 
 No hacen falta librerías extra: cada archivo se ejecuta solo y termina diciendo
@@ -315,13 +338,26 @@ cuántas comprobaciones ha pasado (salida `0` si todo va bien). Ninguna toca tu
 configuración real ni tu buzón (usan una configuración temporal).
 
 ```powershell
+python tests\pruebas_archivos.py         # explorador, mover/copiar y rutas (sin red)
+python tests\pruebas_sharepoint.py       # SharePoint sin Graph: URLs, llamadas _api y clasificación
 python tests\pruebas_correo_nube.py      # correo por la nube, con Microsoft simulado
 python tests\pruebas_gui_correo.py       # botones y avisos de Ajustes (abre la ventana)
 python tests\pruebas_correo_en_vivo.py   # HTTP real contra Microsoft (necesita internet)
 ```
 
----
+`tests\diagnostico_brave.py` merece un apartado propio: **abre Brave** con el
+puerto de depuración y va diciendo, paso a paso, si el navegador está, si la
+pestaña responde y si la sesión sirve para leer SharePoint. Con una URL de
+carpeta comprueba además el listado real y enseña con qué carpeta me quedo
+(útil para verificar que una dirección copiada de SharePoint apunta donde crees):
 
+```powershell
+python tests\diagnostico_brave.py
+python tests\diagnostico_brave.py "https://empresa.sharepoint.com/sites/MiSitio/Documentos compartidos"
+python tests\diagnostico_brave.py "https://empresa.sharepoint.com/sites/MiSitio/Docs/Forms/AllItems.aspx?viewid=...&FolderCTID=..."
+```
+
+---
 
 ## 🗂️ Carpeta de datos de Jarvis
 
