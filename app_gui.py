@@ -71,6 +71,7 @@ class AppGUI(ctk.CTk):
         self.chat_activo = None      # None = sin definir, False = bienvenida, True = conversación
         self._procesando = False
         self._ind_pensando = None
+        self._aviso_chat = ""        # último paso que está haciendo (lo cuenta el chat)
         self._pegado_abajo = True    # True si el usuario está viendo el final del chat
         self.adjuntos = []          # lista de dicts con los archivos adjuntos pendientes
         self._burbujas = []         # registros de las burbujas visibles (para selección)
@@ -105,6 +106,12 @@ class AppGUI(ctk.CTk):
 
         # SharePoint/OneDrive sin Graph: clasificación de archivos con la IA
         self.system.sharepoint.on_clasificar = self._clasificar_archivos_ia
+
+        # El chat va diciendo lo que se está haciendo: las acciones largas
+        # (clasificar los archivos de SharePoint: listar cientos, clasificarlos
+        # y moverlos uno a uno) tardan minutos y sin esto parece colgado.
+        self.system.on_aviso = self._aviso_progreso
+        self.brain.on_aviso = self._aviso_progreso
 
         # Configuración de la ventana principal
         self.title("Jarvis")
@@ -1340,6 +1347,7 @@ class AppGUI(ctk.CTk):
 
     def _mostrar_pensando(self, activo):
         self._procesando = activo
+        self._aviso_chat = ""
         if activo:
             if self._ind_pensando is None:
                 self._ind_pensando = ctk.CTkFrame(self.chat_scroll,
@@ -1359,8 +1367,47 @@ class AppGUI(ctk.CTk):
     def _animar_pensando(self, i):
         if not self._procesando or self._ind_pensando is None:
             return
-        self._lbl_pensando.configure(text="Jarvis está escribiendo" + "." * (i % 4))
+        # Mientras la acción cuenta lo que hace, se enseña ese paso (y se le
+        # siguen animando los puntos) en vez del genérico "está escribiendo".
+        base = self._aviso_chat or "Jarvis está escribiendo"
+        self._lbl_pensando.configure(text=base + "." * (i % 4))
         self.after(400, lambda: self._animar_pensando(i + 1))
+
+    def _aviso_progreso(self, texto):
+        """Un paso del trabajo en curso, tal cual lo cuenta la acción.
+
+        Lo llama el hilo que está trabajando (no el de la ventana), así que el
+        cambio de la etiqueta se deja pedido con ``after``: el chat va diciendo
+        'buscando archivos dentro de 180 carpetas...', 'moviendo 12 de 350...'
+        mientras se hace, en vez de quedarse mudo varios minutos.
+        """
+        texto = str(texto or "").strip()
+        if not texto:
+            return
+        try:
+            self.after(0, lambda: self._pintar_aviso(texto))
+        except Exception as e:
+            print(f"No pude mostrar el progreso en el chat: {e}")
+
+    def _pintar_aviso(self, texto):
+        """Pone el aviso en el indicador del chat (ya en el hilo de la ventana)."""
+        self._aviso_chat = texto
+        if self._ind_pensando is None or not self._procesando:
+            # El trabajo ya terminó (o el indicador no existe todavía): el texto
+            # queda guardado y lo enseñará la animación en cuanto arranque, sin
+            # dejar una burbuja de progreso colgada al final de la conversación.
+            return
+        try:
+            if not self._ind_pensando.winfo_ismapped():
+                self._ind_pensando.pack(anchor="w", padx=18, pady=5)
+            self._lbl_pensando.configure(text=texto)
+            # Solo se baja al final si el usuario estaba viendo el final: si
+            # está leyendo mensajes anteriores, no se le mueve la vista.
+            if self._pegado_abajo:
+                self.after(30, self._scroll_final)
+        except Exception:
+            pass
+
 
     def _nueva_conversacion(self):
         """Inicia un hilo nuevo: el próximo mensaje creará su propio archivo."""
@@ -2330,9 +2377,20 @@ class AppGUI(ctk.CTk):
         prompt = prompts.get(tipo, "Procesa este contenido y genera un documento estructurado en Markdown.") + "\n\nContenido:\n" + contenido
         return self.brain.analizar_documento(prompt)
 
-    def _clasificar_archivos_ia(self, nombres, regla):
-        """Clasifica archivos con la IA: devuelve [(nombre, subcarpeta)]."""
-        return self.brain.clasificar_archivos(nombres, regla)
+    def _clasificar_archivos_ia(self, nombres, regla, carpetas=None, pistas=None):
+        """Clasifica archivos con la IA: devuelve [(nombre, subcarpeta)].
+
+        ``carpetas`` son las que ya existen en el destino (las lee la acción
+        antes de clasificar): se le pasan para que los archivos que encajan
+        caigan en esas y no se invente otras parecidas al lado.
+
+        ``pistas`` son lo que dice por dentro cada documento, y solo llegan en el
+        segundo intento: cuando la IA deja un archivo 'sin clasificar' (típico con
+        nombres que son un hash), la acción le lee el título y las primeras líneas
+        (``modules.pistas``) y la llama otra vez con eso, para que con el
+        contenido sí sepa a qué carpeta va.
+        """
+        return self.brain.clasificar_archivos(nombres, regla, carpetas, pistas)
 
     def reproducir_voz(self, texto, modelo_rvc=None):
         """Reproduce texto con edge-tts (voz española) y cae a pyttsx3 offline si falla."""

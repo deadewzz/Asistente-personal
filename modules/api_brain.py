@@ -4,6 +4,7 @@ import re
 from openai import OpenAI
 
 from modules import rutas
+from modules.sharepoint import SharePoint
 
 class APIBrain:
     MAX_MENSAJES_HISTORIAL = 30  # evita superar el límite de contexto de DeepSeek
@@ -36,6 +37,7 @@ class APIBrain:
     def __init__(self, config_path=rutas.CONFIG_USUARIO):
         self.config_path = config_path
         self.api_key = self._cargar_api_key()
+        self.on_aviso = None       # (texto): cuenta lo que va haciendo (chat)
         
         if self.api_key:
             self.client = OpenAI(
@@ -111,7 +113,7 @@ class APIBrain:
                     "- Buscar archivos DENTRO de una carpeta concreta: [ACCION: BUSCAR_EN_CARPETA|C:\\ruta\\carpeta;;nombre]\n"
                     "- Mover archivos entre carpetas: [ACCION: MOVER_ARCHIVOS|C:\\...\\a.txt;C:\\...\\b.pdf;;C:\\...\\destino] (rutas separadas por ';' y, tras ';;', la carpeta destino). Primero enseña qué vas a mover SIN ';;mover'; añade ';;mover' AL FINAL solo cuando el usuario lo confirme: [ACCION: MOVER_ARCHIVOS|origen;;destino;;mover]\n"
                     "- Copiar archivos entre carpetas: [ACCION: COPIAR_ARCHIVOS|C:\\...\\a.txt;;C:\\...\\destino] (misma idea que mover; ';;copiar' para confirmar)\n"
-                    "- Clasificar archivos de SharePoint/OneDrive según una regla (usa tu sesión de Brave, sin Graph): [ACCION: CLASIFICAR_ARCHIVOS|url_origen;;url_destino;;regla de clasificación]\n"
+                    "- Clasificar archivos de SharePoint/OneDrive según una regla (usa tu sesión de Brave, sin Graph): [ACCION: CLASIFICAR_ARCHIVOS|url_origen;;url_destino;;regla de clasificación]. Basta con la carpeta de arriba: busca también DENTRO de las subcarpetas (entra en la carpeta de cada cliente y clasifica los documentos que encuentre dentro), así que no hace falta la URL de la carpeta exacta. Si destino y origen son el MISMO sitio, los mueve; si son sitios distintos (por ejemplo, una biblioteca de equipo y tu OneDrive), los COPIA y los originales se quedan donde están, así que no digas que no se puede. Si encuentra muchos archivos primero te enseña qué haría SIN tocar nada: pregúntale al usuario y, si confirma, repite la acción añadiendo ';;confirmar' al final ([ACCION: CLASIFICAR_ARCHIVOS|origen;;destino;;regla;;confirmar]). También vale la URL del sitio a secas (por ejemplo, 'https://empresa-my.sharepoint.com/' = la unidad del usuario): el asistente usa su biblioteca de documentos. De esas carpetas solo pasan los documentos de oficina (ppt, pptx, doc y docx): los vídeos (y fotos, zip o PDF) no se listan, no se bajan y no se mueven, así que si el usuario pregunta por ellos dile en qué carpeta están y que esos no se tocan. La regla puede pedir UNO o DOS niveles de carpeta (rama y subrama, por ejemplo 'una rama por tipo de entregable y una subrama por el tipo de dato: Assessment/Data'): escribe la regla tal cual, con los dos niveles, y el asistente crea las dos carpetas (la madre antes que la hija). Antes de clasificar, el asistente mira qué carpetas tiene ya el destino (hasta dos niveles) y le pasa esa lista a la IA: los documentos que encajan se meten en las carpetas que YA existen, en vez de crear otras parecidas; si el destino tiene más carpetas de las que caben, te lo dice. Y si la regla deja archivos fuera (no son propuestas, hay que revisarlos, no se deben tocar), el destino de esos es 'omitir' y con eso no se mueven, no se copian y ni se bajan: no los mandes a 'Otros' ni les busques carpeta\n"
                     "- Leer correos de Outlook: [ACCION: LEER_CORREOS|5] (los numera para que luego puedas responder o mover el que el usuario diga)\n"
                     "- Crear borrador de correo: [ACCION: CREAR_BORRADOR|correo;;asunto;;cuerpo]\n"
                     "- Resumen del correo (criterio opcional: 'hoy', 'no leídos', un número): [ACCION: RESUMEN_CORREOS|hoy], [ACCION: RESUMEN_CORREOS|no leídos], [ACCION: RESUMEN_CORREOS|10]\n"
@@ -410,10 +412,72 @@ class APIBrain:
         )
         return texto
 
-    def clasificar_archivos(self, nombres, regla):
+    # Cuántos archivos van en cada consulta a la IA. La respuesta tiene tope de
+    # tokens, así que con muchos archivos se pregunta por tandas y se juntan los
+    # planes: si no, los últimos acabarían todos en 'Otros'.
+    TANDA_ARCHIVOS = 30
+    # Cuántas carpetas del destino se le enseñan a la IA para que use las que ya
+    # existen ('Assessment/Data') en vez de inventarse otras parecidas. Una
+    # biblioteca de verdad tiene cientos: se corta y se dice en el prompt.
+    MAXIMO_CARPETAS_PROMPT = 150
+
+    def _aviso(self, texto):
+        """Cuenta por el chat qué está haciendo la IA (si hay quien escuche).
+
+        Clasificar una carpeta entera son varias consultas seguidas: decir por
+        cuál va evita que parezca que se ha colgado.
+        """
+        if not texto:
+            return
+        aviso = self.on_aviso
+        if not aviso:
+            return
+        try:
+            aviso(texto)
+        except Exception as e:
+            # Un aviso fallido no puede tumbar la clasificación en marcha.
+            print(f"Error avisando del progreso: {e}")
+
+    def clasificar_archivos(self, nombres, regla, carpetas=None, pistas=None):
         """Devuelve un plan [(nombre, subcarpeta)] para clasificar archivos según 'regla'.
 
-        Llama a la IA pidiendo una línea por archivo con el formato 'nombre|carpeta'.
+        Llama a la IA pidiendo una línea por archivo con el formato
+        'nombre|rama/subrama' (la regla puede pedir uno o dos niveles). Los
+        nombres pueden traer la carpeta de la que sale el archivo
+        ('AXA/acta.docx') cuando se buscó dentro de las subcarpetas; se le pide
+        que los copie tal cual, porque con ellos se encuentra el archivo de
+        verdad.
+
+        ``carpetas`` son las **carpetas que ya existen en el destino**
+        (``SharePoint.catalogo_carpetas``: 'Assessment', 'Assessment/Data'...).
+        Se le enseñan para que meta cada archivo en una de esas cuando encaje,
+        en vez de inventarse una nueva que se le parezca ('Assessment/Data
+        Analysis' al lado de la 'Assessment/Data' que ya está): sin esto la IA
+        no tiene forma de saber qué hay hecho al otro lado.
+
+        ``pistas`` es lo que se sabe del CONTENIDO de cada archivo
+        (``modules.pistas``: el título y las primeras líneas). Es lo que permite
+        clasificar un archivo cuyo nombre no dice nada ('PROPUESTA COMERCIAL
+        bfddfa36 RFI...'): sin eso la IA solo puede adivinar o rendirse.
+
+        Tres finales posibles para cada archivo:
+
+        - Una carpeta: es lo normal, y es lo que se espera.
+        - ``OMITIR``: la regla manda no tocar ese archivo (una transcripción, una
+          Consultoría, algo por revisar). No se pasa, y **tampoco** se baja.
+        - ``DUDOSO`` ('sin clasificar'): la IA no supo a qué categoría va con lo
+          que sabe (ni el nombre ni la pista). Tampoco se pasa, pero eso sí tiene
+          arreglo: quien llama puede leerle el documento y volver a preguntar.
+        - El que la IA no contesta queda también como ``OMITIR``: antes se
+          mandaba a 'Otros' y acababa copiado (y bajado a tu PC, si era grande)
+          en un cajón que no es de nadie.
+
+        Y si la IA deja sin carpeta a TODOS (lo hacía cuando dudaba: contestaba
+        'omitir' hasta con 'Propuesta Arquitectura Cloud'), se le vuelve a
+        preguntar una vez más, diciéndole a la cara que eso no es clasificar. Si
+        la regla pide justo eso (dejar archivos fuera o dejarlos tal cual), no se
+        insiste: el plan es el que la regla pidió.
+
         Si no hay API Key o falla la llamada, devuelve None (el llamador decide).
         """
         if not self.client:
@@ -425,55 +489,336 @@ class APIBrain:
                 return None
         if not nombres:
             return []
+        plan = self._plan_por_tandas(nombres, regla, carpetas, pistas)
+        if plan and self._no_clasifico_nada(plan, regla):
+            self._aviso("La IA no le puso carpeta a ninguno: se lo vuelvo a "
+                        "pedir, a ver si esta vez clasifica.")
+            insistido = self._plan_por_tandas(nombres, regla, carpetas, pistas,
+                                              insistir=True)
+            if insistido is not None:
+                plan = insistido
+        return plan
+
+    def _plan_por_tandas(self, nombres, regla, carpetas=None, pistas=None,
+                         insistir=False):
+        """Pide el plan por tandas y las junta. None si alguna llamada falla.
+
+        Se pregunta por tandas (``TANDA_ARCHIVOS``) porque la respuesta tiene
+        tope de tokens: con muchos archivos en una sola consulta los últimos
+        llegarían sin contestar.
+        """
+        plan = []
+        for inicio in range(0, len(nombres), self.TANDA_ARCHIVOS):
+            tanda = list(nombres[inicio:inicio + self.TANDA_ARCHIVOS])
+            if not insistir:
+                self._aviso(f"Clasificando con la IA: {inicio + len(tanda)} de "
+                            f"{len(nombres)} archivo(s)...")
+            asignadas = self._clasificar_tanda(tanda, regla, carpetas, pistas,
+                                               insistir=insistir)
+            if asignadas is None:
+                return None
+            plan += [(n, asignadas.get(n, SharePoint.OMITIR)) for n in tanda]
+        return plan
+
+    @staticmethod
+    def _no_clasifico_nada(plan, regla=""):
+        """¿Esa vuelta no llevó a NINGÚN archivo a una carpeta?
+
+        Pasa cuando la IA se refugia en 'omitir' (o manda todo a la raíz) en vez
+        de clasificar: con eso el plan no mueve nada y el usuario se queda sin
+        entender por qué. Dos excepciones, que no son fallos:
+
+        - Si la regla dice que hay archivos que no se tocan o que se quedan tal
+          cual, ese plan es exactamente el que se pidió.
+        - Si contestó 'sin clasificar' a todos, es un "no sé" honrado (una
+          propuesta con nombre de hash y sin nada con lo que decidir): insistir
+          sería empujarla a que se lo invente.
+        """
+        if not plan:
+            return False
+        if (SharePoint.regla_deja_fuera(regla)
+                or SharePoint.regla_pide_la_raiz(regla)):
+            return False
+        if all(SharePoint.es_dudoso(subcarpeta) for _, subcarpeta in plan):
+            return False
+        return all(SharePoint.es_omitir(subcarpeta) or not (subcarpeta or "").strip()
+                   for _, subcarpeta in plan)
+
+    # Cómo se pide el plan a la IA: una línea por archivo y nada más (ni tablas,
+    # ni listas, ni comentarios). Aun así el modelo responde como quiere, para eso
+    # está ``_parsear_clasificacion``: entenderle es lo que evita que el plan
+    # llegue vacío y que TODOS los archivos acaben en el mismo sitio.
+    SISTEMA_CLASIFICACION = (
+        "Eres un clasificador de archivos. Respondes SOLO con una línea por "
+        "archivo, en el formato 'nombre_archivo|destino', sin tablas, sin "
+        "listas, sin numeración y sin comentarios. Copias los nombres tal cual "
+        "te llegan. Das carpeta de destino a CADA archivo: si te doy las "
+        "carpetas que YA EXISTEN en el destino, usas una de esas cuando el "
+        "archivo encaje, y si no, la categoría que pida la regla (se creará si "
+        "no está). 'omitir' y 'raíz' son solo para lo que la regla mande "
+        "expresamente: si dudas de dónde va un archivo, eliges la carpeta que "
+        "mejor encaje y, si de verdad no hay forma de saberlo, escribes 'sin "
+        "clasificar'. Nunca pones 'omitir' ni 'raíz' por duda."
+    )
+
+    def _prompt_clasificacion(self, nombres, regla, carpetas=None, pistas=None,
+                              insistir=False):
+        """El texto que se le manda a la IA para que reparta los archivos.
+
+        ``carpetas`` son las que ya existen en el destino: van en su propia
+        sección, porque saber qué está hecho es lo que evita que se invente
+        carpetas nuevas al lado de las que ya hay.
+
+        ``pistas`` es lo que se sabe del contenido de cada archivo (``pistas``):
+        un archivo con nombre de hash no se puede clasificar sin mirarlo por
+        dentro, así que se le enseña aparte, avisándole de que el nombre que
+        tiene que copiar es el de la lista de ARCHIVOS.
+
+        ``insistir`` es para la segunda vuelta: cuando la IA dejó sin carpeta a
+        todos los archivos que se le dieron, se le dice a la cara.
+        """
         prompt = (
-            "Vas a clasificar archivos en subcarpetas según la regla del usuario. "
-            "Responde SOLO con una línea por archivo, en el formato exacto:\n"
-            "nombre_del_archivo|carpeta\n"
-            "La 'carpeta' es el nombre de la subcarpeta de destino (sin barras). "
-            "Si un archivo no encaja en ninguna, usa 'Otros'.\n"
-            "No añadas texto, ni títulos, ni listas, ni bloques de código.\n\n"
-            "REGLA:\n" + str(regla or "") + "\n\n"
-            "ARCHIVOS:\n" + "\n".join(nombres)
+            "Vas a clasificar archivos según la regla del usuario. Responde "
+            "SOLO con una línea por archivo, en este formato exacto:\n"
+            "nombre_del_archivo|destino\n"
+            "El destino puede tener dos niveles separados por '/', como los pida "
+            "la regla (por ejemplo: 'Assessment/Data'). Si la regla solo pide un "
+            "nivel, escribe un solo nivel.\n"
+            "Cada archivo lleva su carpeta: la categoría que pida la regla (si "
+            "nombra categorías -'arquitectura, ciberseguridad, data, qa...'- el "
+            "destino es UNA de esas, tal cual y sin cambiarle la ortografía) o "
+            "una de las que YA EXISTEN en el destino, la que mejor encaje. Una "
+            "categoría que no exista se crea, así que no es excusa para dejarlo "
+            "sin carpeta.\n"
+            "Escribe 'sin clasificar' como destino SOLO si, con lo que sabes del "
+            "archivo (su nombre y, si te la doy, la pista de lo que dice por "
+            "dentro), no hay forma de saber a qué categoría va: "
+            "'nombre_del_archivo|sin clasificar'. Ese archivo se queda sin "
+            "clasificar de verdad, así que no lo uses para no pensar.\n"
+            "Escribe 'omitir' como destino SOLO si la REGLA manda NO tocar ese "
+            "archivo ('las actas no se tocan', 'las transcripciones se omiten', "
+            "'lo que no sea propuesta se queda donde está'): "
+            "'nombre_del_archivo|omitir'. 'omitir' NO es para los que no sabes "
+            "dónde poner.\n"
+            "Escribe 'raíz' como destino SOLO si la REGLA manda dejar ese archivo "
+            "en la carpeta de destino tal cual, sin subcarpeta. Si la regla pide "
+            "clasificar, todos los archivos llevan subcarpeta: 'raíz' no vale.\n"
+            "Copia el nombre EXACTAMENTE como te lo doy. Si trae una carpeta "
+            "delante (por ejemplo 'AXA/acta.docx'), se copia igual: esa carpeta "
+            "es de donde SALE el archivo, no el destino.\n"
+            "No uses tablas, ni listas, ni numeración, ni bloques de código. No "
+            "añadas títulos, ni totales, ni comentarios: una línea por archivo y "
+            "nada más.\n\n"
         )
+        if insistir:
+            prompt += (
+                "OJO: en la respuesta anterior no le diste carpeta a NINGUNO de "
+                "estos archivos, y eso no es clasificar. Da a cada uno la carpeta "
+                "que le toque (de las categorías de la regla o de las que ya "
+                "existen) y usa 'sin clasificar' solo para los que de verdad no "
+                "se puedan saber.\n\n"
+            )
+        prompt += self._seccion_carpetas(carpetas)
+        prompt += self._seccion_pistas(pistas)
+        return (prompt
+                + "REGLA:\n" + str(regla or "") + "\n\n"
+                + "ARCHIVOS:\n" + "\n".join(nombres))
+
+    def _seccion_pistas(self, pistas):
+        """La parte del prompt con lo que se sabe del CONTENIDO de cada archivo.
+
+        Cada pista va con el nombre del archivo delante (entre corchetes) y con
+        el aviso de que eso es la pista, no el nombre: los nombres que hay que
+        copiar en la respuesta son los de la lista de ARCHIVOS, que son con los
+        que después se encuentra el archivo de verdad.
+        """
+        lineas = [f"- [{nombre}] {pista}"
+                  for nombre, pista in (pistas or {}).items()
+                  if " ".join(str(pista or "").split())]
+        if not lineas:
+            return ""
+        return (
+            "LO QUE DICE CADA DOCUMENTO POR DENTRO (su título y sus primeras "
+            "líneas, leídos del propio archivo; sirve para saber de qué va "
+            "cuando el nombre no lo dice):\n" + "\n".join(lineas) + "\n"
+            "De esto solo sacas de qué va el documento y a qué categoría "
+            "pertenece. El nombre que copias es el de la lista de ARCHIVOS, tal "
+            "cual, y no repitas estas pistas en tu respuesta.\n\n"
+        )
+
+    def _seccion_carpetas(self, carpetas):
+        """La parte del prompt donde se le enseñan las carpetas que ya existen.
+
+        Cada carpeta va como ruta relativa al destino ('Assessment/Data'), tal
+        como se espera en la respuesta. Si hay más de las que caben
+        (``MAXIMO_CARPETAS_PROMPT``) se cortan y se dice cuántas faltan: mejor
+        un prompt honesto que uno enorme con 500 nombres.
+        """
+        nombres = [str(c).strip().strip("/") for c in carpetas or ()]
+        nombres = [n for n in nombres if n]
+        if not nombres:
+            return ""
+        recorte = max(1, self.MAXIMO_CARPETAS_PROMPT)
+        restantes = len(nombres) - recorte
+        listado = "\n".join(nombres[:recorte])
+        if restantes > 0:
+            listado += (f"\n… y {restantes} carpeta(s) más con el mismo estilo "
+                        "(si ninguna de las de arriba encaja, usa una de esas "
+                        "formas).")
+        return (
+            "CARPETAS QUE YA EXISTEN EN EL DESTINO (son las que ya están "
+            "hechas):\n" + listado + "\n"
+            "Si un archivo encaja en una de esas carpetas, escribe su destino "
+            "EXACTAMENTE como aparece aquí (mismos niveles, misma ortografía: "
+            "'Assessment/Data', no 'Assessment/data'). NO propongas una carpeta "
+            "nueva si ya existe una que sirva. Solo si ninguna encaja, escribe "
+            "una nueva con el mismo estilo y como mucho dos niveles.\n\n"
+        )
+
+    def _clasificar_tanda(self, nombres, regla, carpetas=None, pistas=None,
+                          insistir=False):
+        """Pregunta a la IA por un grupo de archivos. None si la llamada falla."""
+        prompt = self._prompt_clasificacion(nombres, regla, carpetas, pistas,
+                                            insistir)
         try:
             respuesta = self.client.chat.completions.create(
                 model=self.MODELO,
                 messages=[
-                    {"role": "system",
-                     "content": "Eres un clasificador de archivos. Responde SOLO con "
-                                "una línea por archivo en el formato 'nombre_archivo|carpeta'."},
+                    {"role": "system", "content": self.SISTEMA_CLASIFICACION},
                     {"role": "user", "content": prompt},
                 ],
-                max_tokens=600, temperature=0, stream=False,
+                # Con dos niveles ('Rama/Subrama') las líneas son más largas:
+                # si el tope se queda corto, la mitad del plan no llega.
+                max_tokens=300 + 60 * len(nombres), temperature=0, stream=False,
             )
             texto = respuesta.choices[0].message.content
         except Exception as e:
             print(f"Error clasificando archivos con la IA: {e}")
             return None
-        asignadas = self._parsear_clasificacion(texto, nombres)
-        return [(n, asignadas.get(n, "Otros")) for n in nombres]
+        return self._parsear_clasificacion(texto, nombres)
+
+    # Lo que la IA pone delante de cada línea: viñetas, numeración y las barras de
+    # una tabla de Markdown ('| 1. **acta.docx** | Assessment |').
+    RE_ADORNOS_LINEA = re.compile(r"^\s*(?:[-*•·>|]+\s*|\d+\s*[.)]\s*)+")
+    # Adornos con que envuelve una celda ('**Assessment**', '`Data`', '[REVISAR]').
+    RE_ADORNOS_CELDA = re.compile(r"[*`\"'\[\]{}<>]+")
+    # Celdas con las que dice "aquí no hay nada" (lo típico: sin subrama).
+    SIN_DATO = ("", "-", "--", "---", "—", "–", "n/a", "na", "ninguna",
+                "ninguno", "sin subrama", "sin dato", "no aplica", "?", "??")
+    # Y las que significan "a la carpeta de destino tal cual, sin subcarpeta".
+    A_LA_RAIZ = (".", "/", "(raíz)", "(raiz)", "raíz", "raiz",
+                 "raíz del destino", "raiz del destino", "directo", "(directo)")
+    # Y las que significan "con lo que sé (el nombre y, si la hay, la pista de lo
+    # que dice dentro) no se puede saber a qué categoría va". Se miran ANTES que
+    # 'omitir' (que también reconoce 'sin clasificar'), porque no es lo mismo "no
+    # lo toques" que "no sé": el 'no sé' tiene arreglo (``SystemActions`` le lee
+    # el documento y vuelve a preguntar) y el plan lo dice con ``DUDOSO``. Lo que
+    # siga así no se mueve: mejor quieto que en la carpeta equivocada.
+    SIN_CLASIFICAR = ("sin clasificar", "no se sabe", "no sé", "no lo sé",
+                      "no se puede saber", "no se puede clasificar", "duda",
+                      "desconocido", "sin categoria", "sin categoría")
+    # Cabeceras de tabla: no son archivos ('| Archivo | Rama | Subrama |').
+    PALABRAS_CABECERA = ("archivo", "archivos", "nombre", "nombres", "documento",
+                         "documentos", "file", "filename", "name", "rama", "ramas",
+                         "subrama", "subramas", "carpeta", "carpetas", "ruta",
+                         "destino", "nivel", "niveles", "clasificacion",
+                         "clasificación")
+
+    @classmethod
+    def _limpiar_celda(cls, celda):
+        """Quita de una celda los adornos de la IA ('**Data**' -> 'Data')."""
+        return cls.RE_ADORNOS_CELDA.sub("", celda or "").strip()
+
+    @classmethod
+    def _es_cabecera(cls, nombre, nombres_bajo):
+        """¿Esa línea es la cabecera de una tabla y no un archivo?"""
+        limpio = cls._limpiar_celda(nombre).lower()
+        return limpio not in nombres_bajo and limpio in cls.PALABRAS_CABECERA
 
     @staticmethod
-    def _parsear_clasificacion(texto, nombres):
-        """Convierte la salida 'nombre|carpeta' de la IA en {nombre: carpeta}."""
+    def _buscar_nombre(nombre, nombres, nombres_bajo):
+        """El archivo de verdad al que se refiere la IA con ese nombre.
+
+        La IA a veces acorta ('AXA/2024/acta.docx' -> 'acta.docx'): se acepta
+        solo si ese nombre identifica a UN archivo. Con varios 'acta.docx' en
+        carpetas distintas, mejor no adivinar.
+        """
+        clave = nombre.lower()
+        objetivo = nombres_bajo.get(clave)
+        if objetivo is not None:
+            return objetivo
+        candidatos = [real for real in nombres
+                      if real.lower().endswith("/" + clave)]
+        if len(candidatos) == 1:
+            return candidatos[0]
+        for real in nombres:
+            if real.lower() == clave or real.lower().startswith(clave):
+                return real
+        return None
+
+    @classmethod
+    def _destino_de(cls, celdas):
+        """La subcarpeta de destino a partir de las columnas de la respuesta.
+
+        Dos columnas de destino son rama y subrama ('Assessment|Data' ->
+        'Assessment/Data'). Si la IA manda no tocar el archivo se devuelve
+        ``SharePoint.OMITIR``; si dice que no se puede saber a qué categoría va
+        ('sin clasificar'), ``SharePoint.DUDOSO`` (que no es lo mismo: ese
+        archivo todavía se puede clasificar leyéndolo); y si no dice ninguna
+        carpeta utilizable, ``OMITIR`` (devolver '' lo mandaría a la raíz del
+        destino: el 'todo al mismo sitio' que se quiere evitar).
+        """
+        for celda in celdas:
+            limpio = cls._limpiar_celda(celda)
+            if " ".join(limpio.lower().split()) in cls.SIN_CLASIFICAR:
+                return SharePoint.DUDOSO
+        for celda in celdas:
+            if SharePoint.es_omitir(cls._limpiar_celda(celda)):
+                return SharePoint.OMITIR
+        niveles = []
+        for celda in celdas:
+            limpio = cls._limpiar_celda(celda)
+            bajo = " ".join(limpio.lower().split())
+            if bajo in cls.A_LA_RAIZ:
+                return ""  # a propósito: la carpeta de destino, sin subcarpeta
+            if bajo in cls.SIN_DATO:
+                continue
+            niveles.append(limpio)
+        return "/".join(niveles) if niveles else SharePoint.OMITIR
+
+    @classmethod
+    def _parsear_clasificacion(cls, texto, nombres):
+        """Convierte lo que contestó la IA en {nombre real: subcarpeta}.
+
+        La IA responde como quiere: lo mismo escribe 'nombre|destino' (lo que se
+        le pide) que una tabla de Markdown con rama y subrama ('| acta.docx |
+        Assessment | Data |') o una lista numerada con '->'. Se aceptan todas,
+        porque una respuesta que no se entiende deja el plan vacío y acaba con
+        TODOS los archivos copiados en el mismo sitio: justo lo contrario de
+        clasificar.
+
+        Los que la IA manda no tocar llegan con ``SharePoint.OMITIR`` (o con la
+        palabra que haya usado: 'revisar', 'se omite'...), y no se pasan. Y los
+        que dice que no puede saber llegan con ``SharePoint.DUDOSO``: se quedan
+        quietos, pero de esos sí se puede volver a preguntar (leyéndoles el
+        documento) antes de darlos por perdidos.
+        """
         resultado = {}
         nombres_bajo = {n.lower(): n for n in nombres}
         for linea in (texto or "").splitlines():
-            linea = linea.strip().strip("-*•").strip()
-            if not linea:
+            limpia = cls.RE_ADORNOS_LINEA.sub("", linea.strip()).strip()
+            limpia = limpia.rstrip("|").strip()
+            if not limpia or set(limpia) <= set("|-: "):
+                continue  # vacía, o la raya de una tabla de Markdown
+            partes = re.split(r"\s*(?:\||->|→|=>|\t)\s*", limpia)
+            nombre = cls._limpiar_celda(partes[0])
+            celdas = partes[1:]
+            if not nombre or not celdas:
+                continue  # sin destino no se puede hacer nada con esta línea
+            if cls._es_cabecera(nombre, nombres_bajo):
+                continue  # '| Archivo | Rama | Subrama |': no es un archivo
+            objetivo = cls._buscar_nombre(nombre, nombres, nombres_bajo)
+            if objetivo is None or objetivo in resultado:
                 continue
-            partes = re.split(r"\s*(?:\||->|→|\t)\s*", linea, maxsplit=1)
-            nombre = partes[0].strip().strip('"`')
-            carpeta = partes[1].strip().strip('"`') if len(partes) > 1 else ""
-            if not nombre or not carpeta:
-                continue
-            clave = nombre.lower()
-            objetivo = nombres_bajo.get(clave)
-            if objetivo is None:
-                for real in nombres:
-                    if real.lower() == clave or real.lower().startswith(clave):
-                        objetivo = real
-                        break
-            if objetivo is not None and objetivo not in resultado:
-                resultado[objetivo] = carpeta
+            resultado[objetivo] = cls._destino_de(celdas)
         return resultado

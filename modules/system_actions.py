@@ -60,6 +60,7 @@ class SystemActions:
 
     def __init__(self, config_path=rutas.CONFIG_USUARIO):
         self.config_path = config_path
+        self.on_aviso = None       # (texto): cuenta lo que va haciendo (chat)
         self.office_tool = OfficeAutomation()
         self.productivity = ProductivityTools(config_path)
         self.dev = DevTools(config_path)
@@ -345,46 +346,417 @@ class SystemActions:
             "mover", "copiar", "si", "sí", "ya", "confirmar", "confirmado",
             "adelante", "dale", "ok", "hazlo")
 
+    # A partir de cuántos archivos se enseña el plan y se pide confirmación: una
+    # carpeta con subcarpetas puede tener cientos, y moverlos sin verlo no es plan.
+    UMBRAL_CLASIFICAR = 25
+
+    def _aviso(self, texto):
+        """Cuenta por el chat (y por consola) qué está haciendo la acción.
+
+        Las acciones largas tardan minutos (clasificar archivos de SharePoint:
+        listar la carpeta y sus subcarpetas, clasificar cientos de archivos con
+        la IA y pasarlos uno a uno); sin esto el chat solo enseña 'Jarvis está
+        escribiendo...' y parece colgado. Si nadie escucha (``on_aviso`` lo pone
+        la ventana) queda al menos la consola.
+        """
+        if not texto:
+            return
+        print(f"  [accion] {texto}", flush=True)
+        # getattr: los dobles de prueba (y cualquier subclase) no tienen por qué
+        # pasar por el __init__ que crea 'on_aviso'.
+        aviso = getattr(self, "on_aviso", None)
+        if not aviso:
+            return
+        try:
+            aviso(texto)
+        except Exception as e:
+            # Un fallo al avisar no puede tumbar el trabajo que está en marcha.
+            print(f"  [accion] no pude avisar del progreso: {e}", flush=True)
+
     def _clasificar_archivos(self, parametro):
-        """CLASIFICAR_ARCHIVOS|origen_url;;destino_url;;regla
+        """CLASIFICAR_ARCHIVOS|origen_url;;destino_url;;regla[;;confirmar]
 
         Lista los archivos de la URL de origen (SharePoint/OneDrive) con la
         **sesión real de Brave** (controlado por CDP; el navegador firma las
-        peticiones), los clasifica según la regla con la IA y los mueve a
+        peticiones), los clasifica según la regla con la IA y los lleva a
         subcarpetas de la URL de destino. Todo sin Microsoft Graph.
+
+        Busca también **dentro de las subcarpetas** (dos niveles), así que vale
+        pasarle la carpeta de arriba (la de los clientes): entra en la carpeta
+        de cada cliente y clasifica los documentos que encuentre ahí dentro, sin
+        tener que bajar a mano hasta la que tenga los archivos.
+
+        De esas carpetas solo salen los **documentos de oficina**
+        (``SharePoint.EXTENSIONES_UTILES``: ppt, pptx, doc y docx). Los vídeos
+        (y las fotos, los zip o los PDF) ni se listan, ni se bajan, ni se mueven:
+        de esos solo se avisa de cuántos me salté y **en qué carpetas están**
+        (con su ruta), que en estas bibliotecas son justo los que más pesan y
+        los que nada pintan en una clasificación.
+
+        Dentro del mismo sitio los **mueve**, pero si el destino es otro sitio
+        (por ejemplo, tu OneDrive), los **copia**: los baja y los sube, y los
+        originales se quedan donde estaban. También entiende la URL de un sitio
+        "a secas" (``https://empresa-my.sharepoint.com/`` = "mi unidad") usando
+        su biblioteca de documentos.
+
+        Los archivos **grandes** (más de ``SharePoint.TAMANO_POR_DISCO``, 10 MB)
+        no se pasan "de una vez" porque SharePoint deja a medias esos
+        movimientos: se bajan a tu PC por trozos y se suben al destino igual
+        (y, si era un movimiento, el original se borra solo si lo que llegó pesa
+        lo mismo). Los tamaños salen del listado y se le pasan a
+        ``clasificar_y_mover`` para no preguntarlos otra vez.
+
+        Con muchos archivos (más de ``UMBRAL_CLASIFICAR``) enseña primero qué
+        haría y no toca nada hasta que se repita la acción con ';;confirmar'.
+
+        Y a los que la IA deja **'sin clasificar'** (``SharePoint.DUDOSO``: no
+        supo a qué carpeta van, cosa que pasa con los nombres de archivo que son
+        un hash) les hace un **segundo intento**: les lee el documento por dentro
+        (``pistas_de``: el título y las primeras líneas o diapositivas, de los
+        bytes que se bajan de SharePoint) y vuelve a preguntar solo por esos. Lo
+        que siga sin carpeta se queda donde está, y se dice en el resumen: mejor
+        un archivo quieto que uno en la carpeta equivocada.
+
+        Mientras trabaja va **contando por el chat** lo que hace (qué carpeta
+        lee, cuántos archivos encuentra, el plan y cada archivo que pasa): la
+        ventana pone ``on_aviso`` y aquí se enlaza con el módulo de SharePoint,
+        que es quien avisa de cada paso.
 
         Si Brave no está abierto se abre; si lo está sin depuración, se
         reinicia con aviso (las cookies de sesión de SharePoint son persistentes,
         así que no se pierde el inicio de sesión).
         """
-        partes = (parametro or "").split(";;", 2)
+        partes = (parametro or "").split(";;", 3)
         origen = partes[0].strip() if partes else ""
         destino = partes[1].strip() if len(partes) > 1 else ""
         regla = partes[2].strip() if len(partes) > 2 else ""
+        modo = partes[3].strip() if len(partes) > 3 else ""
         if not origen or not destino:
             return ("Necesito la URL de origen y la de destino: "
                     "CLASIFICAR_ARCHIVOS|origen;;destino;;regla")
+        # Los avisos del módulo de SharePoint salen por aquí (listado paginado,
+        # búsqueda dentro de las subcarpetas y cada archivo que pasa): así el
+        # chat va contando lo que se hace mientras se hace.
+        self.sharepoint.on_aviso = self._aviso
+        self._aviso(f"Clasificando los archivos de {origen} según tu regla y "
+                    f"llevándolos a {destino}.")
         try:
+            # La raíz de un sitio no tiene archivos: se usa su biblioteca.
+            origen = self.sharepoint.resolver(origen)
+            destino = self.sharepoint.resolver(destino)
             nota = self.sharepoint.asegurar_navegador(origen)
-            archivos = self.sharepoint.listar_archivos(origen)
+            if not nota.startswith("Brave ya estaba"):
+                self._aviso(nota)
+            self._aviso("Leyendo la carpeta y bajando a sus subcarpetas (para "
+                        "no dejarme archivos por el camino)...")
+            # Dentro de las subcarpetas también: ahí están los documentos.
+            archivos = self.sharepoint.listar_archivos(
+                origen, profundidad=self.sharepoint.PROFUNDIDAD_BUSQUEDA)
         except Exception as e:
             return (f"No pude acceder a la carpeta de SharePoint.\n{e}")
+        aviso = "" if nota.startswith("Brave ya estaba") else f"{nota}\n"
+        if self.sharepoint.nota_listado:
+            aviso += f"{self.sharepoint.nota_listado}\n"
+            self._aviso(self.sharepoint.nota_listado)
         if not archivos:
-            return f"No hay archivos en {origen}."
-        nombres = [a["nombre"] for a in archivos]
+            return (aviso + f"No hay archivos en {origen} ni dentro de sus "
+                    f"subcarpetas ({self.sharepoint.PROFUNDIDAD_BUSQUEDA} "
+                    "nivel(es)).")
+        nombres = [a["subruta"] for a in archivos]
+        # Cuánto pesa cada uno, tal como lo dijo el listado: sin esto, mover o
+        # copiar tendría que preguntarlo archivo por archivo.
+        tamanos = {a["subruta"]: a.get("tamano") for a in archivos}
+        # Qué carpetas tiene YA el destino (hasta dos niveles): con esa lista la
+        # IA deja cada archivo en una de las que existen, en vez de inventarse
+        # otra que se le parezca al lado de la buena.
+        carpetas = self._carpetas_del_destino(destino)
+        self._aviso(f"Encontré {len(archivos)} archivo(s): los clasifico según "
+                    "la regla.")
         clasificador = getattr(self.sharepoint, "on_clasificar", None)
         if clasificador:
-            plan = clasificador(nombres, regla)
+            plan = self._clasificar_con_ia(clasificador, nombres, regla,
+                                           carpetas)
             if plan is None:
                 return "No pude clasificar: configura tu API Key (DeepSeek) primero."
         else:
             plan = self.sharepoint.clasificar_naive(nombres, regla)
+        plan = self.sharepoint.ajustar_plan(plan, archivos, carpetas)
+        # Lo que la IA no supo clasificar no está perdido: se le lee el documento
+        # por dentro (título y primeras líneas) y se le vuelve a preguntar por
+        # esos. Es lo que hace que una propuesta con nombre de hash acabe en su
+        # carpeta en vez de quedarse quieta.
+        plan, dudosos = self.sharepoint.separar_dudosos(plan)
+        if dudosos and clasificador:
+            rescatados, dudosos = self._reintentar_dudosos(dudosos, origen, regla,
+                                                           carpetas)
+            plan = plan + rescatados
+        # Lo que la regla deja fuera (una transcripción, una Consultoría, algo por
+        # revisar) no es un archivo a pasar: se aparta ANTES de contar y de
+        # enseñar el plan, para no pedir confirmación por él ni bajarlo a tu PC.
+        plan, omitidos = self.sharepoint.separar_omitidos(plan)
+        grandes = self._grandes_del_plan(plan, tamanos)
+        aviso_plan = self._resumen_plan(plan, omitidos, carpetas, dudosos, regla)
+        if grandes:
+            aviso_plan += (f" {grandes} pasan de "
+                           f"{self.sharepoint.TAMANO_POR_DISCO // 1048576} MB: "
+                           "esos van bajándolos a tu PC y subiéndolos (tardan "
+                           "más, pero pasan).")
+        self._aviso("Plan listo: " + aviso_plan)
+        if not plan:
+            return aviso + self._nada_que_pasar(omitidos, dudosos, regla)
+        if len(plan) > self.UMBRAL_CLASIFICAR and not self._quiere_confirmar(modo):
+            self._aviso(f"Son más de {self.UMBRAL_CLASIFICAR} archivos: te "
+                        "enseño el plan y no toco nada hasta que me confirmes.")
+            return aviso + self._vista_previa_clasificacion(plan, origen, destino,
+                                                            omitidos, carpetas,
+                                                            dudosos, regla)
         try:
-            resumen = self.sharepoint.clasificar_y_mover(origen, destino, plan)
+            resumen = self.sharepoint.clasificar_y_mover(origen, destino, plan,
+                                                        tamanos=tamanos,
+                                                        carpetas=carpetas)
         except Exception as e:
-            return f"Error moviendo los archivos: {e}"
-        aviso = "" if nota.startswith("Brave ya estaba") else f"{nota}\n"
+            mismo = (self.sharepoint.parsear_url(origen)["sitio"]
+                     == self.sharepoint.parsear_url(destino)["sitio"])
+            return (f"Error {'moviendo' if mismo else 'copiando'} los archivos: "
+                    f"{e}")
         return aviso + resumen
+
+    def _carpetas_del_destino(self, destino):
+        """Las carpetas que ya existen en el destino ([] si no se pueden leer).
+
+        Se leen ANTES de clasificar y se le pasan a la IA. Sin esto clasificaba
+        a ciegas: no sabía qué carpetas había hechas al otro lado y creaba
+        nuevas ('Assessment/Data Analysis') al lado de las de siempre
+        ('Assessment/Data'), que es justo lo que no se quiere en una biblioteca
+        que ya tiene su orden.
+
+        Si no se pueden leer (el destino todavía no existe, no hay permiso, Brave
+        no responde) se sigue clasificando sin esa lista: es un atajo, no un
+        requisito.
+        """
+        try:
+            carpetas = self.sharepoint.catalogo_carpetas(destino)
+        except Exception as e:
+            self._aviso(f"No pude mirar qué carpetas tiene ya el destino "
+                        f"({e}): clasifico sin esa lista.")
+            return []
+        if not carpetas:
+            self._aviso("El destino todavía no tiene subcarpetas: las que hagan "
+                        "falta se crearán ahí.")
+            return []
+        self._aviso(f"El destino ya tiene {len(carpetas)} carpeta(s): le pido a "
+                    "la IA que use esas cuando un archivo encaje, en vez de "
+                    "crear otras parecidas.")
+        nota = getattr(self.sharepoint, "nota_catalogo", "")
+        if nota:
+            self._aviso(nota)
+        return carpetas
+
+    @staticmethod
+    def _clasificar_con_ia(clasificador, nombres, regla, carpetas, pistas=None):
+        """Pide el plan a la IA, pasándole las carpetas que existen y las pistas.
+
+        El enganche (``SharePoint.on_clasificar``, que pone la ventana) recibe
+        las carpetas del destino y, en el segundo intento, lo que dicen por
+        dentro los documentos (``pistas``). Si alguno se quedó con la firma de
+        antes (dos o tres argumentos) se le llama como entienda: mejor clasificar
+        sin el atajo que reventar la acción.
+        """
+        intentos = [(nombres, regla, carpetas, pistas),
+                    (nombres, regla, carpetas),
+                    (nombres, regla)]
+        for argumentos in intentos:
+            try:
+                return clasificador(*argumentos)
+            except TypeError as e:
+                if "positional argument" not in str(e):
+                    raise
+        return None
+
+    def _reintentar_dudosos(self, dudosos, origen, regla, carpetas):
+        """Segundo intento con los que la IA dejó 'sin clasificar'.
+
+        Se le enseña a la IA lo que dice el propio documento por dentro
+        (``SharePoint.pistas_de``: el título de las propiedades y las primeras
+        líneas o diapositivas, leídos de los bytes que se bajan de SharePoint) y
+        se le pide el plan otra vez, solo para esos archivos y con las mismas
+        carpetas del destino. Un nombre como 'PROPUESTA COMERCIAL bfddfa36 RFI
+        Soporte y-o administración.pptx' no dice de qué disciplina es; la portada
+        del documento sí, y es lo único que hacía falta para clasificarlo.
+
+        Devuelve (lo que ahora sí tiene carpeta, los que siguen sin saberlo): de
+        los segundos se dice en el resumen que se quedan donde están, sin
+        inventarles una carpeta (una propuesta en la carpeta equivocada es peor
+        que una propuesta quieta).
+        """
+        nombres = [nombre for nombre, _ in dudosos]
+        self._aviso(f"{len(nombres)} archivo(s) se quedaron sin clasificar: les "
+                    "leo el documento por dentro y vuelvo a preguntar.")
+        try:
+            pistas = self.sharepoint.pistas_de(origen, nombres)
+        except Exception as e:
+            self._aviso(f"No pude leer esos documentos por dentro ({e}).")
+            return [], dudosos
+        if not pistas:
+            self._aviso("No saqué nada de dentro de esos documentos: se quedan "
+                        "donde están.")
+            return [], dudosos
+        self._aviso(f"Leí el contenido de {len(pistas)} de {len(nombres)} "
+                    "archivo(s): a ver si con eso sabe dónde van.")
+        clasificador = getattr(self.sharepoint, "on_clasificar", None)
+        if not clasificador:
+            return [], dudosos
+        plan = self._clasificar_con_ia(clasificador, nombres, regla, carpetas,
+                                       pistas)
+        if plan is None:
+            return [], dudosos
+        # De listado del segundo intento vale la propia lista de esos archivos:
+        # así, si la IA devuelve el nombre a medias ('bfddfa36.pptx' en vez de
+        # 'Cliente/bfddfa36.pptx'), el plan se completa con su ruta de verdad y
+        # el archivo no se pierde por un nombre mal copiado.
+        listado = [{"nombre": nombre.rsplit("/", 1)[-1], "subruta": nombre}
+                   for nombre in nombres]
+        plan = self.sharepoint.ajustar_plan(plan, listado, carpetas)
+        return self.sharepoint.separar_dudosos(plan)
+
+    def _grandes_del_plan(self, plan, tamanos):
+        """Cuántos archivos del plan van a pasar por tu PC (pesan > 10 MB).
+
+        Se cuenta con los tamaños del listado, para poder avisarlo en el plan y
+        que no sorprenda que esos tarden mucho más (se bajan y se suben).
+        """
+        umbral = getattr(self.sharepoint, "TAMANO_POR_DISCO", 0)
+        if not umbral or not tamanos:
+            return 0
+
+        def pesado(nombre):
+            try:
+                return int(tamanos.get(nombre) or 0) > umbral
+            except (TypeError, ValueError):
+                return False
+
+        return sum(1 for nombre, _ in plan or [] if pesado(nombre))
+
+    @staticmethod
+    def _nada_que_pasar(omitidos, dudosos=None, regla=""):
+        """Qué decir cuando no hay NADA que pasar.
+
+        Sin esto, el plan queda vacío y el resumen hablaría de '0 archivo(s)': lo
+        que hay que contar es por qué no se pasa ninguno, y eso depende de quién
+        los dejó fuera. Si tu regla dice que no se tocan (transcripciones,
+        Consultoría, lo que haya que revisar) es eso lo que se cuenta; si no, es
+        que la IA no supo dónde ponerlos ni mirando el documento por dentro, y
+        decirlo así es lo que hace falta para entender qué pasó (antes se decía
+        siempre 'tu regla deja fuera', aunque la regla no dijera eso).
+
+        En los dos casos se enseña la lista con el motivo de cada uno y que no se
+        tocó nada.
+        """
+        total = len(omitidos or []) + len(dudosos or [])
+        if SharePoint.regla_deja_fuera(regla):
+            lineas = ["No hay nada que pasar: tu regla deja fuera a los "
+                      f"{total} archivo(s) que encontré."]
+        else:
+            lineas = ["No hay nada que pasar: de los "
+                      f"{total} archivo(s) que encontré, ninguno tiene carpeta "
+                      "en el plan (ni mirando dentro de los documentos)."]
+        lineas += [f"  - {nombre} → {carpeta or '(raíz)'}"
+                   for nombre, carpeta in (omitidos or [])[:40]]
+        lineas += [f"  - {nombre} → sin clasificar (no supe dónde va)"
+                   for nombre, _ in (dudosos or [])[:40]]
+        if total > 40:
+            lineas.append(f"  … y {total - 40} más")
+        lineas.append("Los dejé donde estaban.")
+        return "\n".join(lineas)
+
+    @staticmethod
+    def _resumen_plan(plan, omitidos=None, carpetas=None, dudosos=None, regla=""):
+        """Texto corto del plan: cuántos archivos y a qué subcarpetas van.
+
+        Los que no se pasan (los que la regla deja fuera y los que la IA no supo
+        clasificar) no cuentan, pero se dicen: si no, la cuenta no cuadra con lo
+        que se encontró. Y se dice **por qué** se quedan, que no es lo mismo:
+        'tu regla los deja fuera' si la regla habla de eso, y 'no les encontré
+        carpeta' cuando es la IA la que no supo; los que se quedaron 'sin
+        clasificar' se cuentan aparte, para que se vea que ahí sí se intentó
+        leer el documento por dentro. Con ``carpetas`` (las que ya existían en el
+        destino) se dice cuántos archivos van a carpetas de las de siempre y
+        cuántos estrenan carpeta.
+        """
+        carpetas = carpetas or []
+        vistas = []
+        for _, subcarpeta in plan or []:
+            etiqueta = (subcarpeta or "").strip() or "(raíz)"
+            if etiqueta not in vistas:
+                vistas.append(etiqueta)
+        detalle = ", ".join(vistas[:6]) + ("…" if len(vistas) > 6 else "")
+        texto = (f"{len(plan or [])} archivo(s) a {len(vistas)} subcarpeta(s) "
+                 f"({detalle}).")
+        if omitidos:
+            if SharePoint.regla_deja_fuera(regla):
+                texto += (f" Y {len(omitidos)} se quedan sin tocar: tu regla los "
+                          "deja fuera.")
+            else:
+                texto += (f" Y {len(omitidos)} se quedan sin tocar: no les "
+                          "encontré carpeta.")
+        if dudosos:
+            texto += (f" {len(dudosos)} archivo(s) se quedaron 'sin clasificar': "
+                      "no supe a qué carpeta van ni leyendo el documento por "
+                      "dentro, así que se quedan donde están.")
+        if carpetas and plan:
+            dadas = {(c or "").strip().strip("/") for c in carpetas}
+            ya = sum(1 for _, subcarpeta in plan
+                     if (subcarpeta or "").strip().strip("/") in dadas)
+            if ya:
+                texto += (f" {ya} van a carpetas que ya estaban en el destino; "
+                          f"{len(plan) - ya} estrenan carpeta.")
+        return texto
+
+    def _vista_previa_clasificacion(self, plan, origen, destino, omitidos=None,
+                                    carpetas=None, dudosos=None, regla=""):
+        """Qué haría con cada archivo, sin tocar nada (pide confirmación).
+
+        Se usa cuando son muchos: ver antes la lista (de qué carpeta sale cada
+        uno y a dónde va) es la forma de no llevarse media biblioteca por
+        delante. Los que no se tocarían también se enseñan (los de la regla y
+        los que la IA no supo clasificar, cada grupo con su motivo), para que se
+        sepa desde el principio qué se va a quedar quieto. Y las carpetas que ya
+        existen en el destino, para que se vea de dónde salen los destinos que no
+        estrenan carpeta.
+        """
+        mismo = (self.sharepoint.parsear_url(origen)["sitio"]
+                 == self.sharepoint.parsear_url(destino)["sitio"])
+        lineas = [f"Encontré {len(plan) + len(omitidos or []) + len(dudosos or [])} "
+                  f"archivo(s) en {origen} y sus subcarpetas.",
+                  f"Todavía NO he tocado nada. Los "
+                  f"{'movería' if mismo else 'copiaría'} así:"]
+        lineas += [f"  {nombre} → {carpeta or '(raíz)'}"
+                   for nombre, carpeta in plan[:40]]
+        if len(plan) > 40:
+            lineas.append(f"  … y {len(plan) - 40} más")
+        fuera = self.sharepoint.regla_deja_fuera(regla)
+        if omitidos:
+            motivo = ("tu regla los deja fuera" if fuera
+                      else "no les encontré carpeta")
+            lineas.append(f"Y estos NO los tocaría ({motivo}):")
+            lineas += [f"  - {nombre} → {carpeta or '(raíz)'}"
+                       for nombre, carpeta in omitidos[:20]]
+            if len(omitidos) > 20:
+                lineas.append(f"  … y {len(omitidos) - 20} más")
+        if dudosos:
+            lineas.append("Y estos tampoco, porque no supe a qué carpeta van "
+                          "(ni leyendo el documento por dentro):")
+            lineas += [f"  - {nombre}" for nombre, _ in dudosos[:20]]
+            if len(dudosos) > 20:
+                lineas.append(f"  … y {len(dudosos) - 20} más")
+        if carpetas:
+            dichas = ", ".join(carpetas[:20]) + ("…" if len(carpetas) > 20 else "")
+            lineas.append(f"En el destino ya hay {len(carpetas)} carpeta(s) "
+                          f"({dichas}): los archivos que encajan van a esas, no "
+                          "a una nueva que se les parezca.")
+        lineas.append("Si te parece bien, dímelo y lo hago de verdad "
+                      "(CLASIFICAR_ARCHIVOS|origen;;destino;;regla;;confirmar).")
+        return "\n".join(lineas)
 
     # ------------------------------------------------------------------ Reuniones, actas y calendario
     def _listar_reuniones(self, parametro=None):

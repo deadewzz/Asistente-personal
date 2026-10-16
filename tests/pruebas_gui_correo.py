@@ -46,6 +46,13 @@ app = app_gui.AppGUI(config_path=CONFIG)
 navegador = []
 pasos = []
 
+# Con qué cliente de correo arrancó el asistente. En un equipo con Outlook
+# clásico registrado (COM), `crear_cliente_correo` usa ese y no el de la nube
+# (ver `modules/correo.py`): en ese caso no se le puede pedir al cliente del
+# asistente que refleje la sesión de la nube, y las comprobaciones de abajo se
+# ciñen a lo que de verdad se puede afirmar en cada equipo.
+ASISTENTE_EN_LA_NUBE = isinstance(app.system.outlook, CorreoNube)
+
 
 def ejecutar(paso):
     """Corre un paso y sigue con el siguiente aunque falle (sin colgar la ventana)."""
@@ -98,8 +105,13 @@ def paso_2_sesion_ajena():
     print("\n== Un asistente ya abierto ve la conexión hecha después ==")
     CorreoNube(CONFIG)._guardar_ajustes({"token": "t-temporal", "cifrado": False,
                                          "cuenta": "yo@acme.com"})
-    comprobar(app.system.outlook.disponible() is True,
-              "el módulo de correo del asistente ya ve la sesión")
+    if ASISTENTE_EN_LA_NUBE:
+        comprobar(app.system.outlook.disponible() is True,
+                  "el módulo de correo del asistente ya ve la sesión")
+    else:
+        comprobar(app.system.outlook.disponible() is True,
+                  "con Outlook clásico en el equipo, el asistente ya tiene "
+                  "correo y no necesita la sesión de la nube")
     app._actualizar_estado_correo()
     comprobar("Correo conectado: yo@acme.com" in app.lbl_correo.cget("text"),
               "Ajustes muestra la cuenta conectada")
@@ -209,9 +221,10 @@ def paso_9_dialogo():
         confirmar.invoke()
     comprobar("Correo desconectado" in app.lbl_correo.cget("text"),
               "al confirmar, la ventana lo dice")
-    comprobar(CorreoNube(CONFIG).disponible() is False
-              and app.system.outlook.disponible() is False,
-              "y el token se borra del disco para todos")
+    comprobar(CorreoNube(CONFIG).disponible() is False,
+              "y el token se borra del disco")
+    comprobar(not ASISTENTE_EN_LA_NUBE or app.system.outlook.disponible() is False,
+              "el cliente de la nube del asistente lo ve desconectado al momento")
     avanzar()
 
 

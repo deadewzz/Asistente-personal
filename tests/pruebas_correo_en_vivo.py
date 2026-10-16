@@ -78,13 +78,14 @@ comprobar(cliente.disponible() is True
 
 print("\n== Fábrica y compatibilidad ==")
 from modules.correo import crear_cliente_correo
-
-comprobar(type(crear_cliente_correo(CONFIG)).__name__ == "CorreoNube",
-          "la fábrica devuelve el cliente de nube")
 from modules.outlook_tools import OutlookTools
 
-comprobar(OutlookTools.com_disponible() is False,
-          "este equipo no tiene Outlook clásico (COM no disponible)")
+com = OutlookTools.com_disponible()
+comprobar(type(crear_cliente_correo(CONFIG)).__name__ == "CorreoNube",
+          "con sesión de nube, la fábrica devuelve el cliente de nube")
+comprobar(OutlookTools().disponible() is com,
+          f"OutlookTools sigue existiendo y dice si hay correo clásico en el "
+          f"equipo (COM: {com})")
 comprobar(OutlookTools().listar() is None or True, "OutlookTools sigue existiendo")
 
 if os.path.exists(CONFIG):

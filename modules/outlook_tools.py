@@ -63,6 +63,16 @@ class OutlookTools:
             cls._com_cache = cls._com_registrado()
         return cls._com_cache
 
+    def disponible(self):
+        """True si en este equipo se puede leer el correo (con Outlook clásico).
+
+        Es el mismo contrato que ``CorreoNube.disponible()``, para que el resto
+        del asistente pueda preguntarle '¿tienes correo?' al cliente que tenga
+        delante sin saber de qué forma se habla con el buzón (``modules.correo``
+        elige uno u otro según el equipo).
+        """
+        return self.com_disponible()
+
     @staticmethod
     def _com_registrado():
         try:

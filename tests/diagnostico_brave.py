@@ -10,7 +10,8 @@ Comprueba, paso a paso:
 2. Si hay un Brave controlable por CDP (puerto 9222).
 3. Que `aiohttp` está disponible (WebSocket local).
 4. Que se puede abrir una pestaña y evaluar JavaScript en ella.
-5. Si se pasa una URL de SharePoint, lista los archivos REALES usando la
+5. Que el módulo se recupera si la pestaña se muere (esto daba 500).
+6. Si se pasa una URL de SharePoint, lista los archivos REALES usando la
    sesión del navegador (esta es la prueba que antes daba 401).
 
 No imprime cookies ni tokens: Brave firma las peticiones por su cuenta.
@@ -69,12 +70,30 @@ def main():
         paso("puedo abrir una pestaña y evaluar JS", False, str(e))
         return 1
 
+    print("\n== 5. Si la pestaña se muere a mitad (el 500 de antes) ==")
+    try:
+        pestana = navegador_cdp.Pestana("about:blank").abrir()
+        huerfana = pestana.id
+        # Se imita lo que pasa cuando la pestaña desaparece (el usuario la cierra,
+        # Brave se reinicia...): con un id que ya no existe, Brave contesta 500
+        # 'Invalid response status', y eso antes tumbaba la operación entera.
+        pestana.id = "PESTANA-QUE-YA-NO-EXISTE"
+        pestana.ws_url = ("ws://127.0.0.1:9222/devtools/page/"
+                          "PESTANA-QUE-YA-NO-EXISTE")
+        valor = pestana.evaluar("2 + 2")
+        paso("con una pestaña muerta, abre otra y sigue", valor == 4,
+             f"2 + 2 = {valor}")
+        navegador_cdp.cerrar_objetivo(huerfana)
+        pestana.cerrar()
+    except Exception as e:
+        paso("con una pestaña muerta, abre otra y sigue", False, str(e))
+
     if not url:
         print("\nPasa una URL de SharePoint como argumento para probar la sesión.")
         print(f"\nTOTAL: 0 fallos" if not fallos else f"\nTOTAL: {len(fallos)} fallos")
         return 0 if not fallos else 1
 
-    print("\n== 5. Sesión real contra SharePoint ==")
+    print("\n== 6. Sesión real contra SharePoint ==")
     from modules.sharepoint import SharePoint
     sp = SharePoint()
 

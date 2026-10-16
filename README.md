@@ -51,9 +51,87 @@ buscar en la web y mucho más.
   pierdes el inicio de sesión). Puedes pegar la dirección tal cual te la copia
   SharePoint, incluida la de la vista (`.../Oportunidad/Forms/AllItems.aspx?
   viewid=...&FolderCTID=...`): el asistente se queda con la carpeta de la que
-  cuelga. Nunca pisa un archivo que ya exista en el destino (te avisa y lo deja
-  donde estaba) y, si no puede comprobar el destino (por ejemplo, sin permiso),
-  tampoco lo mueve: antes no mover que pisar.
+  cuelga y, si esa carpeta vive en **otro sitio** del mismo tenant (la vista de
+  'Mi unidad', `.../my?id=/personal/<usuario>/Documents/X`), también se queda
+  con su sitio: preguntar por una ruta `/personal/...` en la raíz de OneDrive
+  responde 403. Si le das la URL de un sitio "a secas" usa su **biblioteca de
+  documentos** (el nombre cambia con el idioma del sitio, así que se lo
+  pregunta a SharePoint); y `https://empresa-my.sharepoint.com/` es tu
+  **unidad**, o sea `/personal/<usuario>/Documents`. Dentro del mismo sitio los
+  archivos se **mueven**; si el destino es **otro sitio** (tu OneDrive, por
+  ejemplo) SharePoint no permite mover, así que los **copia** (los baja y los
+  vuelve a subir) y **deja los originales donde estaban**; te lo dice en el
+  resumen para que no te lleves la sorpresa. Los archivos **grandes** (más de
+  10 MB, `SharePoint.TAMANO_POR_DISCO`) no se pasan "de una vez": SharePoint
+  deja a medias esos movimientos (en la práctica, a partir de unos pocos MB) y
+  tampoco caben en un mensaje a la pestaña de Brave, así que **se bajan a tu PC
+  por trozos** (`Range`) a la carpeta `temp\sharepoint` de Jarvis y **se suben
+  al destino con la subida por trozos** (`StartUpload`/`ContinueUpload`/
+  `FinishUpload`). Si era un movimiento, el original se borra **solo después de
+  comprobar** que lo que llegó al destino pesa lo mismo (y queda en la papelera
+  del sitio); si algo falla, **no se borra nada** y el mensaje dice dónde quedó
+  el archivo para que lo subas a mano. Nunca pisa un archivo que ya
+  exista en el destino (te avisa y lo deja donde estaba) y, si no puede
+  comprobar el destino (por ejemplo, sin permiso), tampoco lo mueve: antes no
+  mover que pisar. Si le das la **carpeta de arriba** (por ejemplo
+  `.../Oportunidad/Colombia`, la que solo tiene una carpeta por cliente) el
+  asistente **entra dos niveles** en las subcarpetas y busca ahí los archivos, así
+  que no hace falta pegar la ruta exacta de cada cliente; de cada archivo se
+  queda con **la carpeta de la que sale** para moverlo bien. No se le escapan las
+  carpetas con más de 100 elementos (va pidiendo páginas) y, si corta la búsqueda
+  porque hay demasiadas carpetas o archivos, **te lo avisa** en vez de callarse
+  lo que falta. Como así puede tocar muchos archivos de golpe, con **más de 25**
+  te enseña primero el plan (`AXA/acta.docx → Actas`) y **no toca nada** hasta que
+  respondas `;;confirmar`. Mientras trabaja **el chat va diciendo lo que hace**
+  ("buscando archivos dentro de 180 carpetas (nivel 1 de 2)...", "clasificando
+  con la IA: 60 de 180...", "moviendo 12 de 350: AXA/acta.docx → Actas"), así que
+  no parece colgado; si estás leyendo mensajes anteriores no te mueve la vista, y
+  lo mismo queda en la consola. Cuando hay archivos de más de 10 MB lo avisa en
+  el plan ("2 pasan de 10 MB: esos van bajándolos a tu PC y subiéndolos") y luego
+  va contando los trozos ("bajando informe.docx a tu PC: 12,0 MB de 23,4 MB...",
+  "subiendo informe.docx al destino: 6,0 de 23,4 MB..."). De esas carpetas solo
+  se pasan los **documentos de oficina** (`.ppt`, `.pptx`, `.doc`, `.docx`):
+  los vídeos (y las fotos, los zip o los PDF) **ni se listan, ni se bajan, ni se
+  mueven**, y el chat dice cuántos me salté y **en qué carpetas están** (con su
+  ruta: "Me salté 2 archivo(s) que no son ppt, pptx, doc y docx (vídeos y demás:
+  no los bajo ni los muevo). Están en: /sites/Tech/Colombia, AXA"), por si hay
+  que irlos a mirar a mano. Es la única lista que se pasa
+  (`SharePoint.EXTENSIONES_UTILES`; con la tupla vacía se pasa todo, que es la
+  forma de quitar el filtro) y también es la red de seguridad: si un vídeo llega
+  hasta la descarga o el movimiento (por ejemplo, pedido por su nombre o en un
+  plan viejo), el asistente **se planta antes de bajarlo** y lo dice en el
+  resumen. La regla puede pedir **dos niveles** de carpeta (rama y subrama: una
+  rama por tipo de entregable y una subrama por el tipo de dato, por ejemplo
+  `Assessment/Data`): el asistente crea las dos —nivel a nivel, porque SharePoint
+  no crea una carpeta si su carpeta madre no está— y deja cada archivo en el
+  nivel que le toca. Y si la regla deja archivos **fuera** (no son propuestas,
+  hay que revisarlos, se omiten), esos **no se tocan**: no se mueven, no se
+  copian y, si son grandes, **ni se bajan**; el resumen dice cuáles se quedaron
+  sin tocar («No los toqué (tu regla los deja fuera): …») y no cuentan para el
+  umbral de confirmación. Si la regla los deja fuera **a todos**, contesta «No
+  hay nada que pasar: tu regla deja fuera a los N archivo(s) que encontré» en
+  vez de inventarse un destino. Y si de un archivo no se puede saber nada por el
+  nombre (una propuesta que se llama `PROPUESTA COMERCIAL bfddfa36…`), la IA ya
+  no se refugia en «omitir» ni lo amontona en la raíz: contesta «sin clasificar»
+  y el asistente **le lee el documento por dentro** (el título que guarda en sus
+  propiedades y las primeras líneas o diapositivas, sacadas de los propios bytes
+  del archivo, sin bajarlo a disco ni abrir Word) y **le vuelve a preguntar solo
+  por esos**, ahora con lo que dice el documento; si aun así no se sabe, el
+  archivo **se queda donde está** y el resumen lo dice como lo que es («no supe a
+  qué carpeta van ni leyendo el documento por dentro, así que se quedan donde
+  están»): mejor quieto que en la carpeta equivocada. Eso **no** se cuenta como
+  si la regla lo hubiera mandado dejar fuera (son dos cosas distintas y el
+  resumen las separa), y no se pasa nunca: si alguien se salta ese segundo
+  intento, el archivo tampoco se mueve.
+  Y antes de clasificar, el asistente **mira qué carpetas tiene ya el destino**
+  (hasta dos niveles: la rama y, dentro, su subrama) y se las **enseña a la IA**,
+  así que los archivos se guardan en las carpetas que **ya existen**: si la regla
+  escribe `assessment/data` y en el destino ya está la `Assessment/Data` de
+  siempre, ahí va el archivo, y no a una nueva que se le parezca. Lo cuenta por
+  el chat («mirando las carpetas que ya hay en el destino (nivel 1 de 2)...») y,
+  si el destino tiene más carpetas de las que caben en el prompt, **lo dice** en
+  vez de callarse lo que falta. Si el destino todavía no existe no pasa nada: se
+  crea al pasar los archivos.
 
 ### 📧 Correo y reuniones
 - **Leer y resumir el correo** (Outlook de escritorio o, cuando no está, el **Outlook
@@ -290,6 +368,7 @@ python main.py
    | «Busca facturas en Proyectos» | `[ACCION: BUSCAR_EN_CARPETA|C:\...\Proyectos;;factura]` |
    | «Mueve factura.pdf a Pagadas» | `[ACCION: MOVER_ARCHIVOS|C:\...\factura.pdf;;C:\...\Pagadas;;mover]` |
    | «Clasifica esta carpeta en subcarpetas por tipo» | `[ACCION: CLASIFICAR_ARCHIVOS|url_origen;;url_destino;;regla]` |
+   | «Clasifica el sitio y llévalo a mi OneDrive» | `[ACCION: CLASIFICAR_ARCHIVOS|https://empresa.sharepoint.com/sites/MiSitio;;https://empresa-my.sharepoint.com/;;por tipo de documento]` |
 
 ---
 
@@ -321,8 +400,14 @@ Asistente/
 │   ├── ocr_engine.py       # OCR (Tesseract / RapidOCR)
 │   └── rutas.py            # Rutas centralizadas de la carpeta de Jarvis
 ├── tests/
+│   ├── pruebas_sharepoint.py     # SharePoint sin Graph: URLs, `_api`, copiar/mover, archivos grandes y reintentos
+│   ├── pruebas_accion_clasificar.py # la acción de clasificar, con SharePoint simulado
+│   ├── pruebas_clasificacion_ia.py # el plan de la IA: rama/subrama, archivos que se omiten y 'sin clasificar'
+│   ├── pruebas_pistas.py         # lo que dice por dentro el documento (para los nombres de hash)
+│   ├── pruebas_gui_progreso.py   # el chat va diciendo lo que se está haciendo (abre la ventana)
 │   ├── pruebas_correo_nube.py    # Pruebas del correo en la nube (Graph simulado)
 │   ├── pruebas_correo_en_vivo.py # Comprobación real contra Microsoft (sin credenciales)
+│   ├── pruebas_copia_en_vivo.py  # Copia real entre dos sitios (baja y sube)
 │   └── pruebas_gui_correo.py     # Pruebas de la sección de correo de la ventana
 └── assets/
     ├── plantillas/         # Plantillas .pptx corporativas
@@ -335,14 +420,45 @@ Asistente/
 
 No hacen falta librerías extra: cada archivo se ejecuta solo y termina diciendo
 cuántas comprobaciones ha pasado (salida `0` si todo va bien). Ninguna toca tu
-configuración real ni tu buzón (usan una configuración temporal).
+configuración real ni tu buzón (usan una configuración temporal); la única que
+escribe de verdad en tu nube es la prueba en vivo de la copia, y borra lo que
+sube (ver más abajo).
 
 ```powershell
 python tests\pruebas_archivos.py         # explorador, mover/copiar y rutas (sin red)
-python tests\pruebas_sharepoint.py       # SharePoint sin Graph: URLs, llamadas _api y clasificación
+python tests\pruebas_sharepoint.py       # SharePoint sin Graph: URLs, _api, copiar/mover y archivos grandes
+python tests\pruebas_accion_clasificar.py # clasificar entrando en subcarpetas (SharePoint simulado)
+python tests\pruebas_clasificacion_ia.py # la IA pide rama y subrama, deja archivos fuera y dice 'sin clasificar'
+python tests\pruebas_pistas.py           # el título y las primeras líneas de dentro de un docx/pptx (sin red)
+python tests\pruebas_gui_progreso.py     # el chat cuenta lo que va haciendo (abre la ventana)
 python tests\pruebas_correo_nube.py      # correo por la nube, con Microsoft simulado
 python tests\pruebas_gui_correo.py       # botones y avisos de Ajustes (abre la ventana)
 python tests\pruebas_correo_en_vivo.py   # HTTP real contra Microsoft (necesita internet)
+```
+
+`tests\pruebas_copia_en_vivo.py` es la prueba de fuego de la copia entre sitios:
+le das las dos URLs (vale la del sitio a secas y la de tu OneDrive), **enseña el
+sitio y la carpeta** con los que se queda, baja el archivo **más pequeño** del
+origen (si la carpeta solo tiene carpetas, como pasa en las bibliotecas de
+verdad, mira un par de niveles más abajo), sube un archivo de prueba al destino
+y lo vuelve a bajar **comparando el contenido** (el paso que falla si el token de
+escritura o el cuerpo binario están mal) y, por último, **copia de verdad** un
+archivo del primer sitio al segundo y compara la copia con el original, byte a
+byte. Termina borrando todo lo suyo (el archivo de prueba y la copia), así que
+no deja nada en tu unidad y del origen no borra nada nunca:
+
+```powershell
+python tests\pruebas_copia_en_vivo.py "https://empresa.sharepoint.com/sites/MiSitio" "https://empresa-my.sharepoint.com/"
+```
+
+Con un tercer argumento (`gordo`) prueba además el camino de los **archivos
+grandes**: coge el más pesado del origen, lo baja a tu PC por trozos, lo sube al
+destino con la subida por trozos, comprueba que lo que llegó pesa lo mismo y
+borra la copia (del origen sigue sin borrar nada). Es la comprobación de verdad
+de lo que ahora se hace con los que pasan de 10 MB:
+
+```powershell
+python tests\pruebas_copia_en_vivo.py "https://empresa.sharepoint.com/sites/MiSitio" "https://empresa-my.sharepoint.com/" gordo
 ```
 
 `tests\diagnostico_brave.py` merece un apartado propio: **abre Brave** con el
@@ -356,6 +472,12 @@ python tests\diagnostico_brave.py
 python tests\diagnostico_brave.py "https://empresa.sharepoint.com/sites/MiSitio/Documentos compartidos"
 python tests\diagnostico_brave.py "https://empresa.sharepoint.com/sites/MiSitio/Docs/Forms/AllItems.aspx?viewid=...&FolderCTID=..."
 ```
+
+El paso 5 es el que nos quitó de encima el `500 'Invalid response status'`: se
+apunta a una pestaña que ya no existe (lo que pasa cuando cierras a mano la
+pestaña de Brave, cuando se reinicia el navegador o cuando el ahorro de memoria
+la descarta) y comprueba que el módulo abre otra en la misma URL, en vez de dar
+la operación por perdida.
 
 ---
 
