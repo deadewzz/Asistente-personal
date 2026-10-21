@@ -4,6 +4,7 @@ import json
 import time
 import threading
 import unicodedata
+import warnings
 from datetime import datetime
 
 import inspect
@@ -24,6 +25,15 @@ class MeetingAssistant:
     APPS_REUNION = ["Teams.exe", "Zoom.exe", "CptHost.exe", "CiscoWebex.exe", "webex.exe", "GoogleMeet.exe"]
     PATRONES_TITULO = ["reunión", "reunion", "meeting", "llamada", "call", "conference", "videollamada"]
     WHISPER_MODEL = "small"
+    # Búfer de WASAPI para el audio del sistema. soundcard, si no se le dice
+    # nada, lo deja en el periodo mínimo (~10 ms): el hilo de Python no llega a
+    # vaciarlo y WASAPI marca cada bloque como discontinuo («data discontinuity
+    # in recording»), perdiendo trozos de la reunión. Con varios segundos de
+    # búfer el hilo puede llegar tarde sin que se pierda audio.
+    BUFFER_LOOPBACK = 16000 * 5
+    # Tope de la grabación (2 horas): pasado eso se corta sola.
+    MAX_SEGUNDOS = 7200
+
     # Análisis de la reunión: una grabación de una hora pasa de las 40.000 letras de
     # transcripción, así que se analiza por trozos y luego se une todo en un acta.
     LIMITE_TROZO = 16000
@@ -47,6 +57,7 @@ class MeetingAssistant:
         self.on_alerta = None    # callback de voz (app_gui)
         self.on_resumen = None   # callback para resumir con la IA (app_gui -> brain)
         self.on_metadatos = None  # callback para saber título e invitados (calendario)
+        self.on_notificar = None  # aviso de escritorio (app_gui -> notificaciones)
 
         # Datos de la reunión que se está grabando (título, invitados, inicio)
         self._meta = {}
@@ -69,6 +80,8 @@ class MeetingAssistant:
                 self.en_reunion = True
                 self.iniciar_grabacion()
                 self._alerta("Reunión detectada. Empezando a grabar.")
+                self._notificar("Reunión detectada",
+                                "Estoy grabando. Al terminar te aviso con el acta.")
             elif not en_reunion and self.en_reunion:
                 self.en_reunion = False
                 self.finalizar()
@@ -125,17 +138,42 @@ class MeetingAssistant:
         return audio
 
     def _grabar_loopback(self, chunks):
+        cortes, muestras = 0, 0
         try:
             import soundcard as sc
             fuente = sc.get_microphone(id=str(sc.default_speaker().name), include_loopback=True)
-            with fuente.recorder(samplerate=16000) as rec:
-                while self.grabando and len(chunks) < 7200:  # máx 2 horas
-                    data = rec.record(numframes=16000)
+            # El búfer grande es lo que evita los «data discontinuity»: deja que
+            # el hilo de Python llegue tarde sin que WASAPI pierda audio. Se lee a
+            # trozos de 1/4 de segundo para poder parar en cuanto se pide y para
+            # contar los cortes que queden en una sola línea al terminar
+            # (soundcard repite el aviso en cada bloque que se pierde).
+            with fuente.recorder(samplerate=16000, blocksize=self.BUFFER_LOOPBACK) as rec:
+                while self.grabando and muestras < 16000 * self.MAX_SEGUNDOS:
+                    with warnings.catch_warnings(record=True) as avisos:
+                        warnings.simplefilter("always")
+                        data = rec.record(numframes=4000)
+                    cortes += sum(1 for aviso in avisos
+                                  if aviso.category.__name__ == "SoundcardRuntimeWarning")
                     if data.ndim == 2:
                         data = data.mean(axis=1)
-                    chunks.append(data.astype(np.float32))
+                    if len(data):
+                        chunks.append(data.astype(np.float32))
+                        muestras += len(data)
+                    else:
+                        time.sleep(0.05)
+                # Lo que quedó a medias en la última lectura es el final de la
+                # reunión: se recupera en vez de tirarlo al cerrar el grabador.
+                resto = rec.flush()
+                if len(resto):
+                    if resto.ndim == 2:
+                        resto = resto.mean(axis=1)
+                    chunks.append(resto.astype(np.float32))
         except Exception as e:
             print(f"Error grabando loopback: {e}")
+        finally:
+            if cortes:
+                print(f"[reunión] el audio del sistema avisó de {cortes} corte(s) "
+                      "de discontinuidad durante la grabación.")
 
     def _grabar_mic(self, chunks):
         try:
@@ -214,19 +252,42 @@ class MeetingAssistant:
         audio = self.detener_grabacion()
         if audio is None or len(audio) < 16000:
             self._alerta("No se grabó audio suficiente.")
+            self._notificar("Reunión sin audio",
+                            "No se grabó audio suficiente para poder hacer el acta.")
             return None
         # La duración forma parte de la ficha que recibe la IA al analizar la reunión.
         self._meta["duracion"] = duracion
+        titulo = str(self._meta.get("titulo") or "").strip()
+        nombre_reunion = f"«{titulo}»" if titulo else "la reunión"
         self._alerta("Procesando la reunión...")
+        # Transcribir una reunión larga tarda minutos: el aviso deja claro que
+        # sigue trabajando y que habrá otro cuando el acta esté lista, que es lo
+        # que evita el «¿ya?» del chat.
+        self._notificar("Reunión terminada",
+                        f"Transcribiendo {nombre_reunion} y redactando el acta. "
+                        "Te aviso cuando esté lista.")
         transcripcion = self._transcribir(audio)
         if not transcripcion:
             self._alerta("No pude transcribir la reunión.")
+            self._notificar("No pude transcribir la reunión",
+                            "La grabación no dio texto, así que no hay acta.")
             return None
         acta = self._resumir(transcripcion, self._meta)
-        ruta = self.guardar_acta(transcripcion, acta, duracion=duracion)
+        try:
+            ruta = self.guardar_acta(transcripcion, acta, duracion=duracion)
+        except Exception as e:
+            print(f"No pude guardar el acta: {e}")
+            self._alerta("No pude guardar el acta en la carpeta de reuniones.")
+            self._notificar("No pude guardar el acta",
+                            "La reunión se transcribió, pero el acta no se pudo "
+                            "escribir en la carpeta de reuniones.")
+            return None
         nombre = os.path.basename(ruta) if ruta else ""
         self._alerta(f"Acta de la reunión guardada ({nombre}). "
                      "Dime 'envía el acta' para mandarla por correo.")
+        self._notificar("Acta lista",
+                        f"El acta de {nombre_reunion} está guardada ({nombre}). "
+                        "Pídeme «envía el acta» para mandarla por correo.")
         return ruta
 
     def _transcribir(self, audio):
@@ -685,4 +746,12 @@ class MeetingAssistant:
                 self.on_alerta(texto)
             except Exception as e:
                 print(f"Error alertando: {e}")
+
+    def _notificar(self, titulo, texto=""):
+        """Aviso de escritorio (lo pinta la ventana); sin receptor no pasa nada."""
+        if self.on_notificar:
+            try:
+                self.on_notificar(titulo, texto)
+            except Exception as e:
+                print(f"Error notificando: {e}")
 

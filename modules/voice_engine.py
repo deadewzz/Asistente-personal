@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import time
 import asyncio
 import unicodedata
@@ -33,6 +34,9 @@ class VoiceEngine:
         self.temp_folder = temp_folder
         self.nombre_activacion = self._cargar_nombre_asistente()
         self.voz_tts = "es-MX-DaliaNeural"
+        #: Voz inglesa (para el «speaking» del tutor de inglés): el mismo motor, otra
+        #: voz. Pedir `hablar(..., idioma="en")` lee la respuesta en inglés.
+        self.voz_ingles = "en-US-AriaNeural"
         self.voz_rate = "+15%"  # habla un poco más ágil para que no se sienta pausada
         
         self.recognizer = sr.Recognizer()
@@ -124,6 +128,52 @@ class VoiceEngine:
 
             return None
 
+    def escuchar_ingles(self, timeout=6, frase_max=14):
+        """Escucha una frase en inglés y la devuelve (para el «speaking» del tutor).
+
+        Es el mismo micrófono que usa el chat, pero aquí no hay nada que
+        interpretar: lo que diga el alumno *es* la práctica, así que no se busca
+        palabra de activación ni comandos de cierre. Se transcribe con Whisper en
+        inglés (conservando las mayúsculas: «i» → «I») y, si no está disponible,
+        con Google. Devuelve el texto oído, o None si no se oyó nada.
+        """
+        try:
+            with sr.Microphone() as source:
+                audio = self.recognizer.listen(source, timeout=timeout,
+                                                phrase_time_limit=frase_max)
+        except sr.WaitTimeoutError:
+            return None
+        except Exception as e:
+            print(f"No pude escuchar por el micrófono: {e}")
+            return None
+
+        texto = self._reconocer_whisper(audio, "en", minusculas=False)
+        if not texto:
+            texto = self._reconocer(audio, "en-US")
+        if not texto:
+            return None
+        texto = self._arreglar_mayusculas(texto)
+        print(f"Oído (en, speaking): {texto}")
+        return texto
+
+    @staticmethod
+    def _arreglar_mayusculas(texto):
+        """Devuelve el dictado con las mayúsculas que le quitan los traductores.
+
+        Whisper y Google entregan todo en minúsculas, y para practicar inglés hay
+        que ver «I am from Spain» y no «i am from spain»: además de quedar mal, el
+        analizador del tutor contaría como fallo del alumno algo que no ha dicho.
+        """
+        texto = str(texto or "").strip()
+        if not texto:
+            return ""
+        # El pronombre «I» (y sus contracciones) va siempre en mayúscula.
+        texto = re.sub(r"\bi\b", "I", texto)
+        texto = re.sub(r"\bi('(?:m|ll|ve|d))\b", lambda m: "I" + m.group(1), texto)
+        # Y cada frase empieza en mayúscula.
+        return re.sub(r"(^\s*|[.!?]\s+)([a-z])",
+                      lambda m: m.group(1) + m.group(2).upper(), texto)
+
     def _activar_modo_continuo(self):
         self.modo_continuo = True
         self.ultimo_tiempo_interaccion = time.time()
@@ -150,8 +200,12 @@ class VoiceEngine:
                 self.whisper_model = None
         return self.whisper_model
 
-    def _reconocer_whisper(self, audio):
-        """Transcribe el audio con Whisper (local). Devuelve el texto o None si falla."""
+    def _reconocer_whisper(self, audio, idioma="es", minusculas=True):
+        """Transcribe el audio con Whisper (local). Devuelve el texto o None si falla.
+
+        `minusculas` se pone a False para el inglés hablado: ahí las mayúsculas
+        («I», los nombres) forman parte de lo que se está practicando.
+        """
         if not self.USAR_WHISPER:
             return None
         modelo = self._cargar_modelo_whisper()
@@ -162,14 +216,14 @@ class VoiceEngine:
             arr = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
             segmentos, _ = modelo.transcribe(
                 arr,
-                language="es",
+                language=idioma,
                 beam_size=1,
                 vad_filter=True,                  # recorta silencios (más rápido y preciso)
                 without_timestamps=True,          # texto limpio, sin marcas de tiempo
                 condition_on_previous_text=False,  # evita alucinaciones en frases cortas
             )
-            texto = " ".join(s.text for s in segmentos).strip().lower()
-            return texto
+            texto = " ".join(s.text for s in segmentos).strip()
+            return texto.lower() if minusculas else texto
         except Exception as e:
             print(f"Error en Whisper: {e}")
             return None
@@ -225,14 +279,16 @@ class VoiceEngine:
             "apaga el programa", "cierra el asistente", "termina el programa",
         ])
 
-    def hablar(self, texto, rvc_model_path=None):
+    def hablar(self, texto, rvc_model_path=None, idioma="es"):
+        """Dice el texto en voz alta (español por defecto; ``idioma="en"`` en inglés)."""
         if not texto:
             return
 
+        voz = self.voz_ingles if str(idioma or "es").lower().startswith("en") else self.voz_tts
         ruta_audio_temp = os.path.join(self.temp_folder, "respuesta_base.mp3")
         ruta_audio_final = os.path.join(self.temp_folder, "respuesta_final.wav")
 
-        asyncio.run(self._generar_tts(texto, ruta_audio_temp))
+        asyncio.run(self._generar_tts(texto, ruta_audio_temp, voz))
 
         if rvc_model_path and os.path.exists(rvc_model_path):
             self._aplicar_rvc(ruta_audio_temp, ruta_audio_final, rvc_model_path)
@@ -242,8 +298,8 @@ class VoiceEngine:
 
         self._reproducir_audio(archivo_reproducir)
 
-    async def _generar_tts(self, texto, output_path):
-        communicate = edge_tts.Communicate(texto, self.voz_tts, rate=self.voz_rate)
+    async def _generar_tts(self, texto, output_path, voz=None):
+        communicate = edge_tts.Communicate(texto, voz or self.voz_tts, rate=self.voz_rate)
         await communicate.save(output_path)
 
     def _aplicar_rvc(self, input_audio, output_audio, model_path):

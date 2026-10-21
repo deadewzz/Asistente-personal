@@ -36,6 +36,7 @@ PREVENTA = os.path.join(JARVIS_HOME, "preventa")             # Documentos de pre
 PLANTILLAS = os.path.join(JARVIS_HOME, "plantillas")         # Plantillas .pptx
 MODELOS = os.path.join(JARVIS_HOME, "modelos")               # Modelos locales (p. ej. voz)
 TEMP = os.path.join(JARVIS_HOME, "temp")                     # Archivos temporales (audio, capturas)
+INGLES = os.path.join(JARVIS_HOME, "ingles")                 # Tutor de inglés: nivel, errores y repasos
 
 # ---------------- Archivos concretos ----------------
 CONFIG_USUARIO = os.path.join(CONFIG, "config_usuario.json")
@@ -43,7 +44,7 @@ REGLAS = os.path.join(CONFIG, "reglas.md")
 
 CARPETAS = [
     CONFIG, CONVERSACIONES, NOTAS, REUNIONES, MATRICES, DOCUMENTOS, ADJUNTOS,
-    PRESENTACIONES, PREVENTA, PLANTILLAS, MODELOS, TEMP,
+    PRESENTACIONES, PREVENTA, PLANTILLAS, MODELOS, TEMP, INGLES,
 ]
 
 

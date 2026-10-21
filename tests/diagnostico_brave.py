@@ -4,6 +4,7 @@ Se ejecuta desde la raíz del proyecto:
 
     python tests/diagnostico_brave.py
     python tests/diagnostico_brave.py "https://empresa.sharepoint.com/sites/X/Docs"
+    python tests/diagnostico_brave.py "https://empresa.sharepoint.com/sites/X/Docs" "acta"
 
 Comprueba, paso a paso:
 1. Que Brave está instalado y dónde.
@@ -12,6 +13,9 @@ Comprueba, paso a paso:
 4. Que se puede abrir una pestaña y evaluar JavaScript en ella.
 5. Si se pasa una URL de SharePoint, lista los archivos REALES usando la
    sesión del navegador (esta es la prueba que antes daba 401).
+6. Recorre las subcarpetas buscando Word/PowerPoint (lo mismo que hace
+   LISTAR_SHAREPOINT y CLASIFICAR_ARCHIVOS). El segundo argumento es el filtro
+   por nombre o subcarpeta ('acta', '2026, informe').
 
 No imprime cookies ni tokens: Brave firma las peticiones por su cuenta.
 """
@@ -53,6 +57,7 @@ def main():
 
     print("\n== 4. Pestaña controlable por CDP ==")
     url = sys.argv[1] if len(sys.argv) > 1 else ""
+    filtro = sys.argv[2] if len(sys.argv) > 2 else ""
     try:
         nota = navegador_cdp.asegurar(url or "about:blank")
         paso("brave queda controlable", True, nota)
@@ -76,7 +81,11 @@ def main():
 
     print("\n== 5. Sesión real contra SharePoint ==")
     from modules.sharepoint import SharePoint
+    from modules.progreso import a_consola
     sp = SharePoint()
+    # Aquí no hay ventana: los mismos pasos que el chat enseña se imprimen para
+    # ver, mientras ocurren, qué está haciendo (Brave, cada carpeta...).
+    sp.progreso.conectar(a_consola)
 
     # La URL puede ser la carpeta o la vista web que copia SharePoint
     # ('.../Oportunidad/Forms/AllItems.aspx?viewid=...'): esto enseña con qué
@@ -97,6 +106,28 @@ def main():
         paso("veo las subcarpetas (la carpeta existe de verdad)", True)
     except Exception as e:
         paso("veo las subcarpetas (la carpeta existe de verdad)", False, str(e))
+
+    # Lo que hacen de verdad LISTAR_SHAREPOINT y CLASIFICAR_ARCHIVOS: bajar por
+    # las subcarpetas y quedarse con los documentos de Word y PowerPoint.
+    print("\n== 6. Documentos por las subcarpetas (Word/PowerPoint) ==")
+    try:
+        listado = sp.listar_documentos(url, solo=filtro)
+    except Exception as e:
+        paso("recorro las subcarpetas buscando documentos", False, str(e))
+    else:
+        for archivo in listado["archivos"][:40]:
+            print(f"  --  {archivo['rel']}")
+        if len(listado["archivos"]) > 40:
+            print(f"  --  … y {len(listado['archivos']) - 40} más")
+        print(f"  --  carpetas revisadas: {listado['carpetas']}"
+              f"; ignorados (Excel/PDF/vídeo…): {len(listado['ignorados'])}"
+              f"; fuera por el filtro: {len(listado['excluidos'])}")
+        for fallo in listado["fallos"][:5]:
+            print(f"  --  no pude entrar en: {fallo}")
+        if listado["truncado"]:
+            print("  --  el listado se cortó al llegar al tope de documentos")
+        paso("recorro las subcarpetas buscando documentos", True,
+             f"{len(listado['archivos'])} documento(s)")
     sp.cerrar()
 
     print(f"\nTOTAL: {len(fallos)} fallos")

@@ -235,6 +235,14 @@ class Explorador:
         """Listado legible de una carpeta, listo para mostrar al usuario."""
         entradas = self.listar(carpeta)
         if entradas is None:
+            # Una URL de SharePoint/OneDrive no es una ruta del PC: si llega aquí
+            # es que se confundió la acción, así que se dice (antes solo se veía
+            # "No pude abrir la carpeta" con un https:// y no había pista).
+            if str(carpeta or "").strip().lower().startswith(("http://", "https://")):
+                return (f"Eso es una dirección de internet, no una carpeta del "
+                        f"PC: {carpeta}\nPara una carpeta de SharePoint/OneDrive "
+                        "(sin descargarla) hay que listarla con el listado de "
+                        "SharePoint, que usa tu sesión de Brave.")
             return f"No pude abrir la carpeta: {carpeta}"
         if not entradas:
             return f"La carpeta está vacía: {carpeta}"

@@ -52,6 +52,17 @@ def pruebas_navegacion():
         comprobar(ex.listar(os.path.join(raiz, "no existe")) is None,
                   "carpeta inexistente devuelve None")
 
+    # Con una URL (SharePoint/OneDrive) el listado local no puede hacer nada: el
+    # mensaje lo dice, en vez de dejar un "No pude abrir la carpeta: https://..."
+    # que no explica nada (fue el fallo que se vio en la ventana).
+    texto = ex.listar_texto("https://empresa.sharepoint.com/sites/X/Oportunidad")
+    comprobar("dirección de internet" in texto and "SharePoint" in texto
+              and "https://empresa.sharepoint.com" in texto,
+              "con una URL avisa de que no es una carpeta del PC y qué usar")
+    texto = ex.listar_texto(os.path.join(raiz, "no existe"))
+    comprobar(texto.startswith("No pude abrir la carpeta:"),
+              "con una ruta del PC sigue avisando igual")
+
 
 def pruebas_buscar():
     print("\n== Búsqueda recursiva ==")

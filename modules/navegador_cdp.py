@@ -220,3 +220,28 @@ def _nuevo_objetivo():
         return _http_json("/json/new", "PUT")
     except Exception:
         return _http_json("/json/new", "GET")
+
+
+def objetivos():
+    """Pestañas abiertas que la depuración puede controlar (vacío si no hay)."""
+    try:
+        return [objetivo for objetivo in _http_json("/json/list")
+                if objetivo.get("type") == "page"]
+    except Exception:
+        return []
+
+
+def pestana_de(fragmento):
+    """Pestaña **ya abierta** cuya dirección contiene ese texto (o None).
+
+    Se usa para hablar con una página que ya está en marcha (por ejemplo el
+    reproductor de Spotify sonando) en vez de abrir otra pestaña y cortar la música.
+    """
+    for objetivo in objetivos():
+        if fragmento in (objetivo.get("url") or ""):
+            pestana = Pestana()
+            pestana.id = objetivo.get("id")
+            pestana.ws_url = objetivo.get("webSocketDebuggerUrl")
+            if pestana.ws_url:
+                return pestana
+    return None

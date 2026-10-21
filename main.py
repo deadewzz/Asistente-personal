@@ -47,6 +47,7 @@ def verificar_entorno():
         config_inicial = {
             "api_key": "",
             "nombre_asistente": "jarvis",
+            "usuario": "",
             "modelo_rvc_path": "",
             "programas": {
                 "discord": "discord://",
