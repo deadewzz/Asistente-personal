@@ -378,11 +378,13 @@ def pruebas_apartado():
     prompt = leer("modules", "api_brain.py")
     sistema = leer("modules", "system_actions.py")
     ventana = leer("app_gui.py")
+    apartado = leer("views", "ingles.py")
+    apartado_chat = leer("views", "chat.py")
     codigo_tutor = leer("modules", "english_tutor.py")
 
-    def metodo(nombre):
-        """El trozo de código de un método de la ventana, para poder mirarlo."""
-        trozo = ventana[ventana.index(f"def {nombre}(self"):]
+    def metodo(codigo, nombre):
+        """El trozo de código de un método, para poder mirarlo."""
+        trozo = codigo[codigo.index(f"def {nombre}(self"):]
         siguiente = trozo.find("\n    def ", 10)
         return trozo[:siguiente] if siguiente > 0 else trozo
 
@@ -395,36 +397,39 @@ def pruebas_apartado():
               "el despachador no atiende ninguna acción de inglés")
 
     # --- La ventana tiene el apartado, con su botón
-    comprobar("self.vista_ingles = ctk.CTkFrame" in ventana
-              and "def _crear_vista_ingles(self, parent):" in ventana,
-              "la ventana monta el apartado de inglés como una vista propia")
+    comprobar("self.vista_ingles = VistaIngles(self)" in ventana
+              and "class VistaIngles(Vista):" in apartado,
+              "la ventana monta el apartado de inglés como una vista propia "
+              "(views/ingles.py)")
     comprobar('command=lambda: self._mostrar_vista("ingles")' in ventana
               and 'elif vista == "ingles":' in ventana,
               "con su botón en la barra lateral y su rama en _mostrar_vista")
-    comprobar("self.btn_ingles.configure" in ventana and "COLOR_TARJETA if vista" in ventana,
+    resaltar = metodo(ventana, "_resaltar_apartado")
+    comprobar('("ingles", getattr(self, "btn_ingles", None))' in resaltar
+              and "COLOR_TARJETA if abierto" in resaltar,
               "y el apartado queda marcado en la barra lateral mientras está abierto")
-    comprobar("TAREAS_INGLES" in ventana and "AYUDA_INGLES" in ventana
-              and "from modules.english_tutor import MARCA_TUTOR, NIVELES" in ventana,
+    comprobar("TAREAS_INGLES" in apartado and "AYUDA_INGLES" in apartado
+              and "from modules.english_tutor import MARCA_TUTOR, NIVELES" in apartado,
               "las tareas, la ayuda de entrada y los niveles están conectados")
-    comprobar("def _accion_ingles(self, tarea):" in ventana
-              and "def _pedir_clase(self, encargo):" in ventana,
+    comprobar("def _accion_ingles(self, tarea):" in apartado
+              and "def _pedir_clase(self, encargo):" in apartado,
               "las tareas del tutor se lanzan desde el apartado")
-    comprobar("threading.Thread(target=self._pedir_clase" in ventana,
+    comprobar("threading.Thread(target=self._pedir_clase" in apartado,
               "y la clase se pide a la IA en un hilo aparte (la ventana no se cuelga)")
-    comprobar("APIBrain.SISTEMA_TUTOR" in ventana,
+    comprobar("APIBrain.SISTEMA_TUTOR" in apartado,
               "con el mensaje de sistema del profesor (respuesta larga en Markdown)")
-    comprobar("def _escribir_clase(self, texto):" in ventana
-              and "def _actualizar_ingles(self):" in ventana
-              and "def _cambiar_nivel_ingles(self, nivel):" in ventana,
+    comprobar("def _escribir_clase(self, texto):" in apartado
+              and "def _actualizar_ingles(self):" in apartado
+              and "def _cambiar_nivel_ingles(self, nivel):" in apartado,
               "el panel de la clase, la cabecera del avance y el nivel son suyos")
 
     # --- Y el chat no sabe nada del tutor
-    chat = metodo("_procesar_mensaje")
+    chat = metodo(apartado_chat, "_procesar_mensaje")
     comprobar("MARCA_TUTOR" not in chat and "ingles" not in chat,
               "el chat no mira la marca del tutor ni prepara clases")
-    comprobar("def _clase_ingles(self, encargo):" not in ventana,
+    comprobar("def _clase_ingles(self, encargo):" not in apartado_chat,
               "ni queda el método que redactaba la clase para el chat")
-    comprobar("texto_voz" not in ventana,
+    comprobar("texto_voz" not in apartado_chat,
               "tampoco el aviso de voz que se leía en su lugar")
 
     # --- El cerebro sigue teniendo lo que el apartado necesita

@@ -239,7 +239,7 @@ def paso_7b_speaking():
               == int(app.btn_ingles_mic.cget("height")),
               "y un micrófono redondo en su anillo, junto a la clase")
     comprobar(getattr(getattr(app.btn_ingles_mic, "_command", None), "__func__", None)
-              is app_gui.AppGUI._toggle_speaking,
+              is type(app.vista_ingles)._toggle_speaking,
               "que es el botón que enciende y apaga el speaking")
     comprobar("Micrófono apagado" in app.lbl_speaking.cget("text"),
               "de entrada avisa de que el micrófono está apagado")

@@ -44,6 +44,25 @@ class APIBrain:
         "haya cometido ni cambias lo que quiso decir. Devuelves SOLO la clase pedida y no "
         "añades comandos [ACCION: ...]."
     )
+    # Mensaje de sistema del profesor de programación (`programming_tutor`, marca
+    # `__PROFE__`): lo usa el apartado «Aprender programación» de la ventana. Como
+    # en la clase de inglés, aquí se quiere una explicación larga y en Markdown
+    # (el porqué, el ejemplo y el arreglo línea a línea), sin brevedad y sin
+    # interpretar comandos de acción dentro de la respuesta.
+    SISTEMA_PROGRAMADOR = (
+        "Eres un profesor de programación para hispanohablantes y das la clase en español, "
+        "con Java como lenguaje (versión 17 o posterior). Enseñas a pensar, no a copiar: "
+        "explicas el porqué de cada regla, qué hace la máquina por dentro y cómo leer los "
+        "mensajes del compilador. Corriges el código que se te da línea a línea, sin inventar "
+        "errores que no estén, sin reescribir lo que el alumno quiso decir y sin dar por hecho "
+        "que compila lo que no has visto compilar. Todos los ejemplos van en bloques de Java "
+        "que compilen tal cual, con el `import` cuando haga falta. Adaptas el vocabulario y la "
+        "profundidad al nivel que se te indique (Principiante, Intermedio o Avanzado) y, si "
+        "el alumno repite un fallo, lo nombras y le das una regla mnemotécnica para no "
+        "repetirlo. Escribes en Markdown, solo con los apartados que se te piden, en ese "
+        "orden y con esos títulos, sin saludos ni despedidas. Devuelves SOLO la clase pedida "
+        "y no añades comandos [ACCION: ...]."
+    )
     # Marca de un comando interno de acción ('[ACCION: ...]') dentro de la respuesta.
     RE_MARCA_ACCION = re.compile(r"\[\s*ACCION\s*:\s*", re.IGNORECASE)
     # Adornos que pueden envolver al comando (backticks, paréntesis, punto final,

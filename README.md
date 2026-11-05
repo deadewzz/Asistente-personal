@@ -1,4 +1,4 @@
-# 🎙️ Jarvis — Asistente personal
+emp# 🎙️ Jarvis — Asistente personal
 
 Asistente de escritorio para **Windows** que combina **voz, chat y automatización del
 sistema**. Escucha comandos por micrófono (o por texto), razona con un modelo de lenguaje
@@ -274,6 +274,59 @@ Si no hay ninguno de los dos caminos, Jarvis te lo dice y no hace nada.
   (el apartado no se queda colgado) y, cuando está lista, se puede **copiar** al
   portapapeles o **guardar** como `.md` en `Documentos\Jarvis\documentos`.
 
+### ☕ Aprender programación (apartado propio)
+- **Tampoco pasa por el chat**: se entra con el botón **«💻 Programar»** de la barra
+  lateral. Es un **taller de Java**: a la izquierda el editor (con su «Entrada» para
+  el teclado y el campo «Tema»), a la derecha la **revisión en vivo** y lo que se te
+  enseña, en tarjetas.
+- **Se revisa mientras escribes, y es gratis**: el analizador propio ve llaves,
+  paréntesis y corchetes sin cerrar, `;` que faltan, comillas sin terminar, `=` donde
+  iba `==`, `string` en minúscula, `printline`, `if` sin paréntesis, comparar textos
+  con `==`… Cada aviso sale con su **línea y su columna** y con la pista de qué
+  arreglar, sin gastar IA ni necesitar internet. La revisión se lanza **una sola vez
+  al dejar de teclear** (700 ms), para que el editor no se note pesado.
+- **Compila de verdad, si tienes JDK**: *Corregir* pasa además `javac` (con su salida
+  en inglés, para leer los mensajes) y traduce cada error al mismo formato; si el
+  fallo es estructural (una llave sin cerrar) no se repite el ruido en cascada que
+  suelta el compilador. Sin JDK todo lo demás sigue funcionando y el panel lo dice:
+  `JDK instalado: compila y ejecuta de verdad` o `sin JDK: revisión básica`.
+- **▶ Probar ejecuta tu programa**: lo compila y lo corre con un tope de tiempo (en
+  un hilo aparte, así la ventana no se congela) y enseña lo que ha impreso; lo que
+  el programa lea por teclado se escribe antes en «Entrada», un dato por línea.
+- **Las bases, lección por lección**: *Bases* trae el temario del curso (primer
+  programa, variables, condicionales, bucles, métodos, arrays, clases, herencia,
+  colecciones, excepciones, entrada por teclado y cómo leer un error de
+  compilación), cada tema con su sintaxis, un ejemplo comentado, los errores típicos
+  y un ejercicio; *Lección* trae el tema que escribas en «Tema».
+- ***Documentación***, *¿Por qué…?* y *Ejercicios*: la guía de consulta de las clases
+  que más se usan al empezar (`String`, `ArrayList`, `HashMap`, `Scanner`…, con la
+  firma, un ejemplo, las trampas y el enlace a la documentación de Oracle), las
+  comparaciones razonadas que más dudas generan (`==` frente a `equals`, `+` frente a
+  `StringBuilder`, `ArrayList` frente a `LinkedList`…) y ejercicios con soluciones
+  del tema que pidas o de los fallos que más se te repitan.
+- **Su propio chat, aparte del de Jarvis**: el centro del taller tiene dos caras,
+  **Clase** (todas esas tarjetas) y **Chat**, una conversación independiente donde
+  preguntar lo que quieras sin ensuciar el chat de siempre. *Preguntar* lleva la duda
+  de «Tema» a ese chat; si escribes ahí, `Enter` la manda y `Mayús+Enter` salta de
+  línea. Cada pregunta va con **tu programa delante** y con **lo que ya habéis
+  hablado**, así que se puede seguir indagando («¿y entonces cómo lo comparo?»), y la
+  respuesta se lee con su formato: código en monoespaciada, negritas y listas. *Nuevo*
+  empieza otra conversación. Cada chat se guarda en
+  `Documentos\Jarvis\programacion\chat_taller_<fecha>.md`, nunca en tus conversaciones.
+- **Todo lo que ya está escrito se lee sin conexión**: el temario, las lecciones, la
+  documentación, las comparaciones y el avance salen de las tablas del módulo y no
+  gastan ni una llamada. Solo los ejercicios, la duda suelta y los temas que no están
+  en las tablas se le piden a la IA, con el mensaje de sistema del profesor de
+  programación (`APIBrain.SISTEMA_PROGRAMADOR`).
+- **Lleva tu avance**: el **nivel** (Principiante, Intermedio, Avanzado) se cambia en
+  el desplegable de la cabecera; cada corrección cuenta como práctica y apunta los
+  fallos para insistir en ellos («lo que más se te repite»). Se guarda en
+  `Documentos\Jarvis\programacion\estado.json`, y *Mi avance* / *Borrar* lo enseñan y
+  lo reinician (borrar pide confirmación la segunda vez).
+- **Nada de esto escribe en el chat**: ni la revisión, ni la salida del programa, ni
+  las clases. Lo que se ve se puede **copiar** al portapapeles o **guardar** como
+  `.md` en `Documentos\Jarvis\documentos`.
+
 ---
 
 ## 📋 Requisitos
@@ -284,6 +337,14 @@ Si no hay ninguno de los dos caminos, Jarvis te lo dice y no hace nada.
   el motor OCR en Python `rapidocr-onnxruntime`):
   ```powershell
   winget install -e --id UB-Mannheim.TesseractOCR
+  ```
+- *(Opcional)* **JDK 17+** para que el taller de programación **compile y ejecute** los
+  programas de verdad (`javac` y `java` en el `PATH`, que es lo que busca
+  `ProgrammingTutor.hay_jdk`). Sin JDK el taller sigue funcionando —revisa llaves,
+  paréntesis, `;` y los errores típicos de empezar, y explica lo que pidas— pero no
+  compila ni ejecuta, y lo dice en el panel:
+  ```powershell
+  winget install -e --id Microsoft.OpenJDK.17
   ```
 
 ---
@@ -472,6 +533,9 @@ python main.py
   los campos de *Ajustes*).
 - El tutor de inglés tiene su propio apartado: se entra con el botón **🎓 Inglés** de
   la barra lateral y ahí se escribe, se piden las clases y se guarda el avance.
+- El taller de programación (Java), igual: **💻 Programar** en la barra lateral. Se
+  escribe el programa, se revisa solo mientras escribes (con línea y columna, sin
+  gastar IA), *Corregir* pasa el compilador y *Probar* lo ejecuta.
 - Para una acción, el asistente responde con un comando en el formato
   `[ACCION: TIPO|PARAMETRO]` que se ejecuta automáticamente. Algunos ejemplos:
 
@@ -508,6 +572,7 @@ python main.py
    | «Cada documento del assessment en la carpeta que le toque (sin mover los originales)» | `[ACCION: CLASIFICAR_ARCHIVOS|url_origen;;url_destino;;copia cada uno en la carpeta que le corresponda]` (o la bandera `;;copiar` al final) |
    | «Colócalos por lo que pone dentro, no por el nombre» | `[ACCION: CLASIFICAR_ARCHIVOS|url_origen;;url_destino;;cada uno en la carpeta que le corresponda]` — antes de mover, el asistente **lee** cada Word/PowerPoint; para ir solo por el nombre (más rápido, sin bajadas): `[ACCION: CLASIFICAR_ARCHIVOS|url_origen;;url_destino;;por tipo;;sin leer]` |
    | Clase de inglés (corregir, explicar, ejercicios, conversar…) | Ya **no** se pide por el chat: tiene su apartado propio, con el botón «🎓 Inglés» de la barra lateral y un botón por tarea |
+   | Aprender a programar en Java (revisar mi código, un tema, un ejercicio…) | Tampoco: taller propio, con el botón «💻 Programar» de la barra lateral, la revisión en vivo, un botón por tarea y su propio chat (aparte del de siempre) |
 
 ---
 
@@ -516,7 +581,15 @@ python main.py
 ```
 Asistente/
 ├── main.py                 # Punto de entrada: entorno, .env, migración y arranque de la GUI
-├── app_gui.py              # Interfaz gráfica (customtkinter)
+├── app_gui.py              # La ventana: barra lateral, cambio de apartado y servicios
+├── ui/
+│   └── tema.py             # Paleta, tipografía, medidas y atajos: el estilo, en un sitio
+├── views/                  # Un módulo por apartado (cada uno es una vista de la ventana)
+│   ├── base.py             # La base común: atajos de las cajas, Markdown y tarjetas
+│   ├── chat.py             # El chat: burbujas, adjuntos, barra de escribir y pasos
+│   ├── ingles.py           # «Clase de inglés»: tareas del tutor, clase y speaking
+│   ├── programacion.py     # «Aprender programación»: editor, revisión en vivo y clases
+│   └── ajustes.py          # Ajustes: tu nombre, la voz, la nube, el correo y Spotify
 ├── main.spec               # Receta de empaquetado con PyInstaller
 ├── requirements.txt
 ├── .env.example            # Plantilla de variables de entorno
@@ -539,6 +612,7 @@ Asistente/
 │   ├── cloud_matrix.py     # Matriz en la nube (Excel + Azure DevOps)
 │   ├── dev_tools.py        # Commits de Git y comandos de terminal
 │   ├── english_tutor.py    # Tutor de inglés: fallos, clases y la charla del «Speaking»
+│   ├── programming_tutor.py# Taller de Java: revisión con línea y columna, javac, temario y avance
 │   ├── ocr_engine.py       # OCR (Tesseract / RapidOCR)
 │   ├── progreso.py         # Lo que está haciendo, contado en vivo a la ventana
 │   └── rutas.py            # Rutas centralizadas de la carpeta de Jarvis
@@ -549,6 +623,8 @@ Asistente/
 │   ├── pruebas_gui_correo.py     # Pruebas de la sección de correo de la ventana
 │   ├── pruebas_ingles.py         # Pruebas del tutor de inglés (detección, clases, speaking y apartado)
 │   ├── pruebas_gui_ingles.py     # Pruebas del apartado de inglés: botón, panel, avance y speaking
+│   ├── pruebas_programacion.py   # Pruebas del taller de Java (revisión con línea y columna, javac, ejecutar y apartado)
+│   ├── pruebas_gui_programacion.py # Pruebas del apartado de programación: revisión en vivo, corrección, ejecutar y avance
 │   ├── pruebas_gui_estilo.py     # Pruebas del aspecto: paleta, tarjetas, acento, caja expansible y micrófono
 │   ├── pruebas_gui_perfil.py     # Pruebas de «Tu nombre»: se guarda y el asistente lo recuerda
 │   ├── pruebas_gui_atajos.py     # Pruebas de los atajos de las cajas (Ctrl+Supr, Ctrl+A, deshacer...)
@@ -558,6 +634,28 @@ Asistente/
     ├── plantillas/         # Plantillas .pptx corporativas
     └── tools/tessdata/     # Modelos de idioma de Tesseract (spa/eng)
 ```
+
+### Cada apartado es una vista
+
+La ventana (`app_gui.py`) es solo el armazón: la barra lateral, el cambio de
+apartado y los servicios que comparten todos (el cerebro, las acciones del
+sistema, la voz y el historial). Cada apartado vive en su módulo de `views/` y
+es una **vista** independiente —un `CTkFrame` con sus widgets, su estado y sus
+métodos—:
+
+| Vista | Apartado | Qué trae |
+| --- | --- | --- |
+| `views/chat.py` | Chat | Burbujas, adjuntos, barra de escribir, pasos del indicador y explorador |
+| `views/ingles.py` | 🎓 Inglés | Texto del alumno, tareas del tutor, clase en tarjetas y speaking |
+| `views/programacion.py` | 💻 Programar | Editor, revisión en vivo, ejecutar, la clase del profesor de Java y su chat aparte |
+| `views/ajustes.py` | ⚙ Ajustes | Tu nombre, la voz, la nube, el correo y Spotify |
+
+La ventana las monta en `_crear_interfaz`, las enseña y las esconde
+(`pack`/`pack_forget`) y les pasa lo común en `self.app`; no entra en lo que hay
+dentro de cada una. Lo que se repite (atajos de las cajas, Markdown de los
+paneles y tarjetas con icono) está en `views/base.py`, y el estilo —paleta,
+tipografía y medidas— en `ui/tema.py`, así que un cambio de color se hace en un
+sitio y se ve en todos los apartados.
 
 ---
 
@@ -571,11 +669,13 @@ configuración real ni tu buzón (usan una configuración temporal).
 python tests\pruebas_archivos.py         # explorador, mover/copiar y rutas (sin red)
 python tests\pruebas_sharepoint.py       # SharePoint sin Graph: URLs, llamadas _api, clasificación y progreso
 python tests\pruebas_ingles.py           # tutor de inglés: detección local, avance, speaking y apartado (sin IA)
+python tests\pruebas_programacion.py    # taller de Java: revisión con línea y columna, javac, ejecutar y apartado (sin IA)
 python tests\pruebas_correo_nube.py      # correo por la nube, con Microsoft simulado
 python tests\pruebas_musica.py           # la música: pista, play (API de Spotify y reproductor web) y control
 python tests\pruebas_reunion.py          # el acta al terminar, los avisos de escritorio y el búfer de grabación
 python tests\pruebas_gui_correo.py       # botones y avisos de Ajustes (abre la ventana)
 python tests\pruebas_gui_ingles.py       # el apartado de inglés: botón, panel, nivel, avance y speaking (abre la ventana)
+python tests\pruebas_gui_programacion.py # el taller de Java: revisión en vivo, corregir, probar, tablas y avance (abre la ventana)
 python tests\pruebas_gui_estilo.py       # el aspecto: paleta, tarjetas, acento, Markdown del chat y caja expansible
 python tests\pruebas_gui_perfil.py       # «Tu nombre»: se guarda, se ve y el asistente lo recuerda
 python tests\pruebas_gui_atajos.py       # los atajos de las cajas: Ctrl+Supr, Ctrl+Retroceso, Ctrl+A y deshacer

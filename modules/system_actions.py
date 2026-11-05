@@ -25,6 +25,7 @@ from modules.archivos import Explorador
 from modules.sharepoint import SharePoint
 from modules.progreso import Progreso
 from modules.english_tutor import EnglishTutor
+from modules.programming_tutor import ProgrammingTutor
 from modules import navegador_cdp
 from modules import rutas
 
@@ -248,6 +249,10 @@ class SystemActions:
         # la clase. Lo usa el apartado «Clase de inglés» de la ventana (no el
         # chat) y guarda el nivel y los errores repetidos en `Jarvis/ingles`.
         self.ingles = EnglishTutor(config_path)
+        # Taller de programación: corrige en local con su analizador y con `javac`
+        # (sin gastar IA) y guarda el nivel y los fallos repetidos en
+        # `Jarvis/programacion`. Lo usa el apartado «Aprender programación».
+        self.programacion = ProgrammingTutor(config_path)
 
     def ejecutar_comando(self, comando_str):
         if not comando_str:

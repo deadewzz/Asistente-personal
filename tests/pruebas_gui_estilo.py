@@ -131,12 +131,22 @@ def paso_1_paleta():
     comprobar(contraste(app_gui.COLOR_TEXTO, app_gui.COLOR_TARJETA) >= 7
               and contraste(app_gui.COLOR_TEXTO_SUAVE, app_gui.COLOR_TARJETA) >= 4.5,
               "y el texto normal y el suave también, sobre las tarjetas")
-    with open(os.path.join(RAIZ, "app_gui.py"), encoding="utf-8") as archivo:
-        fuente = archivo.read()
-    resto = fuente.split("RADIO_TARJETA", 1)[1]
-    comprobar(not re.search(r'"#[0-9a-fA-F]{6}"', resto),
+    # La paleta vive en `ui/tema.py`; el resto de la interfaz (la ventana y cada
+    # apartado) no puede llevar colores ni fuentes escritos a mano.
+    archivos = [os.path.join(RAIZ, "app_gui.py"),
+                os.path.join(RAIZ, "views", "base.py"),
+                os.path.join(RAIZ, "views", "chat.py"),
+                os.path.join(RAIZ, "views", "ingles.py"),
+                os.path.join(RAIZ, "views", "programacion.py"),
+                os.path.join(RAIZ, "views", "editor_codigo.py"),
+                os.path.join(RAIZ, "views", "ajustes.py")]
+    fuente = ""
+    for ruta in archivos:
+        with open(ruta, encoding="utf-8") as archivo:
+            fuente += archivo.read()
+    comprobar(not re.search(r'"#[0-9a-fA-F]{6}"', fuente),
               "no quedan colores sueltos por la ventana: todos salen de la paleta")
-    comprobar(not re.search(r'font=\("Segoe', resto),
+    comprobar(not re.search(r'font=\("Segoe', fuente),
               "ni fuentes escritas a mano: todas salen de FUENTE_UI y FUENTE_MONO")
     avanzar()
 
