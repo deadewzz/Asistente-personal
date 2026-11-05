@@ -21,6 +21,7 @@ from PIL import Image
 from modules.ocr_engine import motor as ocr_motor, ocr_imagen
 from modules import rutas
 from ui import tema
+from ui import scroll as rueda
 from ui.tema import (
     ALTO_INPUT_LINEA, ALTO_INPUT_LINEAS_MAX, ALTO_INPUT_MIN, AVISO_INPUT,
     BARRA_SCROLL, COLOR_ACENTO, COLOR_ACENTO_2, COLOR_ACENTO_HOVER,
@@ -173,6 +174,7 @@ class VistaChat(Vista):
             font=(tema.FUENTE_UI, 14))
         self.entry_chat.pack(side="left", fill="x", expand=True, padx=(10, 8), pady=8)
         self.entry_chat._textbox.configure(spacing1=2, spacing3=2, padx=0, pady=2)
+        rueda.acelerar_caja(self.entry_chat)   # la rueda avanza más líneas de golpe
         self._alto_input_actual = ALTO_INPUT_MIN
         self._chat_vacio = True          # dentro está el aviso, no un mensaje
         self._poner_fantasma()

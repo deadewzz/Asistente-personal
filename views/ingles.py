@@ -17,6 +17,7 @@ from modules.api_brain import APIBrain
 from modules.english_tutor import MARCA_TUTOR, NIVELES
 from modules import rutas
 from ui import tema
+from ui import scroll as rueda
 from ui.tema import (
     BARRA_SCROLL, COLOR_ACENTO, COLOR_ACENTO_2, COLOR_ACENTO_HOVER,
     COLOR_ACENTO_TEXTO, COLOR_BORDE, COLOR_CODIGO, COLOR_HOVER, COLOR_PANEL,
@@ -152,6 +153,7 @@ class VistaIngles(Vista):
                                                text_color=COLOR_TEXTO, font=(tema.FUENTE_UI, 12),
                                                undo=True, maxundo=200, wrap="word")
         self.txt_ingles_texto.pack(fill="x")
+        rueda.acelerar_caja(self.txt_ingles_texto)
         # Este cuadro también se enciende al escribir en él (es donde se escribe).
         self.txt_ingles_texto.bind(
             "<FocusIn>", lambda e: self.txt_ingles_texto.configure(border_color=COLOR_ACENTO))

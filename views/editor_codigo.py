@@ -16,6 +16,7 @@ import tkinter as tk
 import customtkinter as ctk
 
 from ui import tema
+from ui import scroll as rueda
 from ui.tema import (
     COLOR_ACENTO, COLOR_ACENTO_2, COLOR_ACENTO_HOVER, COLOR_ACENTO_TEXTO,
     COLOR_AVISO, COLOR_BORDE, COLOR_CODIGO, COLOR_CODIGO_TEXTO, COLOR_FONDO, COLOR_HOVER,
@@ -165,6 +166,7 @@ class VentanaEditorCodigo(ctk.CTkToplevel):
         self.txt_codigo.bind("<F5>", lambda e: (self._ejecutar(), "break")[1])
         self.txt_codigo.bind("<Control-Return>", lambda e: (self._ejecutar(), "break")[1])
         self.txt_codigo.bind("<Control-s>", lambda e: (self._guardar_java(), "break")[1])
+        rueda.acelerar_caja(self.txt_codigo)   # la rueda avanza más líneas de golpe
         pie = ctk.CTkLabel(marco, text="Tab = 4 espacios  \u00b7  F5 ejecuta  "
                                        "\u00b7  Ctrl+S guarda el .java",
                            font=(tema.FUENTE_UI, 10), text_color=COLOR_TEXTO_SUAVE)
@@ -201,6 +203,7 @@ class VentanaEditorCodigo(ctk.CTkToplevel):
         self.txt_entrada.insert("1.0", self.vista.entrada_programacion())
         self.txt_entrada.bind("<KeyRelease>", lambda e: self._al_escribir_entrada())
         self.vista._atajos_caja(self.txt_entrada)
+        rueda.acelerar_caja(self.txt_entrada)
 
     # ---------------- El código: lo que se escribe y cómo se pinta ----------------
     def codigo(self):

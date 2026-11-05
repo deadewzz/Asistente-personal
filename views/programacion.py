@@ -8,10 +8,11 @@ programa sale en la consola, sin gastar IA. Los botones arman la tarea
 (`ProgrammingTutor`) y el contenido se pinta en tarjetas, igual que la clase de
 inglés.
 
-El centro tiene dos caras, con una pestaña para cada una: **Clase** (las tarjetas)
-y **Chat**, que es una conversación propia del taller —con su hilo, su memoria y
-su archivo en la carpeta del taller— para indagar lo que haga falta sin ensuciar
-la conversación de Jarvis.
+El centro tiene una zona (su pestaña) por tarea: **Clase**, el **Chat** del taller
+—con su hilo, su memoria y su archivo en la carpeta del taller— y una más para
+cada botón (Bases, Lección, Ejercicios, Documentación, comparaciones, avance,
+revisión y salida del programa), de modo que lo de una tarea no pisa lo de otra.
+Cada zona se puede abrir además en su propia ventana (`views.zona_programacion`).
 """
 import os
 import threading
@@ -23,6 +24,7 @@ from modules.api_brain import APIBrain
 from modules.programming_tutor import MARCA_PROFE, NIVELES as NIVELES_JAVA
 from modules import rutas
 from ui import tema
+from ui import scroll as rueda
 from ui.tema import (
     BARRA_SCROLL, COLOR_ACENTO, COLOR_ACENTO_HOVER, COLOR_ACENTO_TEXTO,
     COLOR_AVISO, COLOR_BORDE, COLOR_CODIGO, COLOR_CODIGO_TEXTO, COLOR_HOVER,
@@ -32,6 +34,7 @@ from ui.tema import (
 
 from views.base import Vista, caja_consola, escribir_consola, limpiar_consola
 from views.editor_codigo import VentanaEditorCodigo, nombre_de_clase
+from views.zona_programacion import VentanaZonaProgramacion
 
 # ---------------- Apartado de programación (taller de Java) ----------------
 # Mismo esquema que el de inglés: cada tarea del taller es un botón con su icono.
@@ -58,6 +61,47 @@ MAX_AVISOS_PANTALLA = 12
 #: El chat es una conversación del taller, aparte de la del chat de Jarvis.
 PANEL_PROG_CLASE = "\U0001F4DA  Clase"
 PANEL_PROG_CHAT = "\U0001F4AC  Chat"
+
+#: Una zona por tarea: cada botón de «Qué quieres hacer» abre la suya, con su
+#: pestaña en el centro y la opción de verla en una ventana aparte. Así lo de una
+#: tarea no pisa lo de otra: la lección sigue ahí mientras miras los ejercicios.
+#: clave -> (pestaña, icono, título, qué se lee en esa zona)
+ZONAS_PROG = {
+    "clase": (PANEL_PROG_CLASE, "\U0001F4D8", "Lo que te enseño",
+              "La guía del taller y lo último que te he preparado."),
+    "chat": (PANEL_PROG_CHAT, "\U0001F4AC", "Chat del taller",
+             "Una conversación propia del taller, con tu programa delante."),
+    "revision": ("\U0001F50E  Corregir", "\U0001F50E", "Revisión del compilador",
+                 "Lo que ha visto el compilador de tu programa, con línea y columna."),
+    "probar": ("\u25B6  Probar", "\u25B6", "Lo que hizo tu programa",
+               "La salida y el desenlace de la última ejecución."),
+    "bases": ("\U0001F4D6  Bases", "\U0001F4D6", "Bases del curso",
+              "Por dónde empieza el temario: primer programa, variables y condicionales."),
+    "leccion": ("\U0001F4D8  Lección", "\U0001F4D8", "Lección del tema",
+                "La lección que me pidas en «Tema», paso a paso y con ejemplos."),
+    "ejercicios": ("\u270F  Ejercicios", "\u270F", "Ejercicios para practicar",
+                   "Ejercicios del tema (o de tus fallos) con sus soluciones comentadas."),
+    "documentacion": ("\U0001F4D1  Docs", "\U0001F4D1", "Documentación",
+                      "Qué hace una clase o un método, con ejemplos de uso."),
+    "comparar": ("\u2696  ¿Por qué?", "\u2696", "Comparaciones razonadas",
+                 "Dos formas de hacer lo mismo, y cuándo conviene cada una."),
+    "progreso": ("\U0001F4CA  Avance", "\U0001F4CA", "Mi avance",
+                 "Tu nivel, las prácticas corregidas y los fallos que más se repiten."),
+}
+
+#: Qué zona abre cada botón del taller (el de borrar deja el avance a la vista).
+ZONA_DE_TAREA = {
+    "corregir": "revision",
+    "probar": "probar",
+    "preguntar": "chat",
+    "bases": "bases",
+    "leccion": "leccion",
+    "documentacion": "documentacion",
+    "comparar": "comparar",
+    "ejercicios": "ejercicios",
+    "progreso": "progreso",
+    "borrar": "progreso",
+}
 
 #: Lo que se lee en el chat del taller antes de preguntar nada.
 AYUDA_CHAT_PROG = (
@@ -120,6 +164,9 @@ AYUDA_PROGRAMACION = (
     "   · **\u2696 ¿Por qué…?**: comparaciones razonadas («¿por qué `equals` y no `==`?»).\n"
     "   · **\u270F Ejercicios**: para practicar un tema o los fallos que más se te repiten.\n"
     "   · **\u2753 Preguntar**: tu duda suelta, que se contesta en el **chat del taller**.\n"
+    "   Cada botón abre **su propia pestaña** en el centro y no pisa lo de las demás: "
+    "puedes dejar la lección abierta y mirar los ejercicios en otra. Con **\u29C9 En "
+    "ventana** esa misma zona se abre aparte, para verla a la vez que el taller.\n"
     "4. El **\U0001F4AC Chat** (la pestaña de arriba, a la derecha de «Clase») es una "
     "conversación propia del taller: ahí puedes indagar lo que quieras y se acuerda de lo "
     "que habéis hablado, sin mezclarlo con tu chat de siempre. Enter manda y Mayús+Enter "
@@ -149,7 +196,14 @@ class VistaProgramacion(Vista):
         self._prog_borrar_pendiente = False
         self._revision_prog = None  # `after` de la revisión mientras se escribe
         # El chat del taller: una conversación propia, con su hilo y su archivo.
-        self._panel_prog = "clase"  # qué cara del centro se está viendo
+        self._panel_prog = "clase"  # qué zona del centro se está viendo
+        # Una entrada por zona abierta (clave -> marco, tarjetas, texto, ventana…).
+        # Cada botón de «Qué quieres hacer» abre la suya y conserva lo que tenía.
+        self._zonas_prog = {}
+        self._orden_zonas_prog = []     # en el orden en que se han abierto
+        self._orden_pestanas = []       # el de las pestañas que se están viendo
+        self._contenedor_prog = None    # donde viven las zonas (se monta al construir)
+        self._zona_destino = None       # a qué zona escribe el turno en curso
         self._hilo_prog = []        # [(quién, texto)] de lo hablado en el chat
         self._burbujas_chat_prog = []   # lo mismo, pero tal cual se ha pintado
         self._chat_prog_ruta = None     # archivo del chat (uno nuevo por conversación)
@@ -228,6 +282,7 @@ class VistaProgramacion(Vista):
             text_color=COLOR_CODIGO_TEXTO, font=(tema.FUENTE_MONO, 11), wrap="none",
             state="disabled")
         self.txt_prog_codigo.pack(fill="x")
+        rueda.acelerar_caja(self.txt_prog_codigo)
         self.lbl_prog_estado = ctk.CTkLabel(
             caja_practica, text="Listo cuando quieras.", font=(tema.FUENTE_UI, 11),
             anchor="w", justify="left", wraplength=248, text_color=COLOR_TEXTO_SUAVE)
@@ -296,6 +351,7 @@ class VistaProgramacion(Vista):
                                       corner_radius=RADIO_TARJETA, border_width=1,
                                       border_color=COLOR_BORDE)
         marco_revision.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        self.marco_revision_prog = marco_revision
         fila_revision = ctk.CTkFrame(marco_revision, fg_color="transparent")
         fila_revision.pack(fill="x", padx=14, pady=(10, 4))
         ctk.CTkLabel(fila_revision, text="\U0001F50E", font=(tema.FUENTE_UI, 14),
@@ -313,12 +369,14 @@ class VistaProgramacion(Vista):
             text_color=COLOR_TEXTO, font=(tema.FUENTE_MONO, 11), wrap="word")
         self.txt_prog_avisos.pack(fill="x", padx=14, pady=(0, 12))
         self.txt_prog_avisos.configure(state="disabled")
+        rueda.acelerar_caja(self.txt_prog_avisos)
 
         # La consola: aquí sale lo que imprime el programa al pulsar «Ejecutar».
         marco_consola = ctk.CTkFrame(centro, fg_color=COLOR_TARJETA,
                                      corner_radius=RADIO_TARJETA, border_width=1,
                                      border_color=COLOR_BORDE)
         marco_consola.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        self.marco_consola_prog = marco_consola
         fila_consola = ctk.CTkFrame(marco_consola, fg_color="transparent")
         fila_consola.pack(fill="x", padx=14, pady=(10, 4))
         ctk.CTkLabel(fila_consola, text="\u25B6", font=(tema.FUENTE_UI, 13),
@@ -344,62 +402,41 @@ class VistaProgramacion(Vista):
             text_color=COLOR_TEXTO, font=(tema.FUENTE_MONO, 11), wrap="none")
         self.txt_prog_entrada.pack(fill="x", padx=14, pady=(4, 12))
         self._atajos_caja(self.txt_prog_entrada)
+        rueda.acelerar_caja(self.txt_prog_entrada)
 
-        # --- Lo que se ve en el centro: la clase en tarjetas y el chat del taller ---
-        # Son dos caras del mismo sitio. Las tarjetas son la clase (temario, lección,
-        # ejercicios, salida del programa...), el mismo panel que la clase de inglés;
-        # el chat es una conversación propia del taller, aparte de la del chat de
-        # Jarvis: aquí se indaga sin ensuciar la conversación de siempre.
+        # --- Lo que se ve en el centro: una zona independiente por tarea ---
+        # Cada botón de «Qué quieres hacer» abre su propia zona: su pestaña en el
+        # centro, con su contenido, sus botones de copiar/guardar y la opción de
+        # verla en una ventana aparte. Así lo de una tarea no pisa lo de otra.
         contenedor = ctk.CTkFrame(centro, fg_color="transparent")
         contenedor.grid(row=2, column=0, sticky="nsew")
         contenedor.grid_columnconfigure(0, weight=1)
         contenedor.grid_rowconfigure(1, weight=1)
+        self._contenedor_prog = contenedor
 
-        pestanas = ctk.CTkFrame(contenedor, fg_color="transparent")
-        pestanas.grid(row=0, column=0, sticky="w", pady=(0, 8))
+        self.pestanas_prog = ctk.CTkFrame(contenedor, fg_color="transparent", height=34)
+        self.pestanas_prog.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self.pestanas_prog.grid_propagate(False)   # manda su ancho, no el de los botones
+        self.pestanas_prog.bind("<Configure>", lambda e: self._colocar_pestanas())
         self.botones_prog_panel = {}
-        for clave, texto in (("clase", PANEL_PROG_CLASE), ("chat", PANEL_PROG_CHAT)):
-            boton = ctk.CTkButton(
-                pestanas, text=texto, width=104, height=30, corner_radius=RADIO_CHIP,
-                border_width=1, font=(tema.FUENTE_UI, 12, "bold"),
-                command=lambda p=clave: self._cambiar_panel_programacion(p))
-            boton.pack(side="left", padx=(0, 6))
-            self.botones_prog_panel[clave] = boton
-        self._marcar_panel_programacion()
+        self._zonas_prog = {}
+        self._orden_zonas_prog = []
 
-        self.marco_panel_prog = ctk.CTkFrame(
-            contenedor, fg_color=COLOR_TARJETA, corner_radius=RADIO_TARJETA,
-            border_width=1, border_color=COLOR_BORDE)
-        self.marco_panel_prog.grid(row=1, column=0, sticky="nsew")
-        fila = ctk.CTkFrame(self.marco_panel_prog, fg_color="transparent")
-        fila.pack(fill="x", padx=14, pady=(10, 2))
-        ctk.CTkLabel(fila, text="\U0001F4D8", font=(tema.FUENTE_UI, 14),
-                     text_color=COLOR_ACENTO).pack(side="left")
-        ctk.CTkLabel(fila, text="Lo que te enseño", font=(tema.FUENTE_UI, 14, "bold"),
-                     text_color=COLOR_TEXTO).pack(side="left", padx=(8, 0))
-        self.btn_prog_copiar = ctk.CTkButton(
-            fila, text="\U0001F4CB", width=34, height=30, corner_radius=RADIO_CHIP,
-            state="disabled", fg_color=COLOR_TARJETA_ALTA, hover_color=COLOR_HOVER,
-            border_width=1, border_color=COLOR_BORDE, text_color=COLOR_TEXTO,
-            font=(tema.FUENTE_UI, 12), command=self._copiar_programacion)
-        self.btn_prog_copiar.pack(side="right")
-        self.btn_prog_guardar = ctk.CTkButton(
-            fila, text="\U0001F4BE  Guardar", width=118, height=30, corner_radius=RADIO_CHIP,
-            state="disabled", fg_color=COLOR_TARJETA_ALTA, hover_color=COLOR_HOVER,
-            border_width=1, border_color=COLOR_BORDE, text_color=COLOR_TEXTO,
-            font=(tema.FUENTE_UI, 12), command=self._guardar_programacion)
-        self.btn_prog_guardar.pack(side="right", padx=(0, 6))
-
-        self.scroll_prog = ctk.CTkScrollableFrame(self.marco_panel_prog,
-                                                  fg_color="transparent", **BARRA_SCROLL)
-        self.scroll_prog.pack(fill="both", expand=True, padx=6, pady=(2, 10))
-
-        # El chat del taller, en su propia tarjeta (nace escondido: se entra por la
+        self._crear_zona_clase(contenedor)
+        # El chat del taller, en su propia zona (nace escondido: se entra por la
         # pestaña «Chat» o pulsando «Preguntar»).
         self.marco_chat_prog = self._crear_panel_chat(contenedor)
         self.marco_chat_prog.grid(row=1, column=0, sticky="nsew")
         self.marco_chat_prog.grid_remove()
-        self._escribir_programacion(AYUDA_PROGRAMACION)
+        self._zonas_prog["chat"] = {
+            "tipo": "chat", "marco": self.marco_chat_prog,
+            "titulo": ZONAS_PROG["chat"][2], "icono": ZONAS_PROG["chat"][1],
+            "ayuda": ZONAS_PROG["chat"][3], "pestana": ZONAS_PROG["chat"][0],
+            "ventana": None,
+        }
+        self._orden_zonas_prog.append("chat")
+        self._refrescar_pestanas()
+        self._escribir_en_zona("clase", AYUDA_PROGRAMACION)
 
         # --- Derecha: la guía, en corto (lo mismo que los botones, con su porqué)
         derecha = ctk.CTkScrollableFrame(cuerpo, width=282, fg_color="transparent",
@@ -465,6 +502,194 @@ class VistaProgramacion(Vista):
         boton.pack(fill="x")
         return boton
 
+    # ---------------- Las zonas del centro: una por tarea ----------------
+    def _crear_zona_clase(self, parent):
+        """Monta la zona de la clase: la guía, sus tarjetas y sus botones."""
+        pestana, icono, titulo, ayuda = ZONAS_PROG["clase"]
+        marco = ctk.CTkFrame(parent, fg_color=COLOR_TARJETA, corner_radius=RADIO_TARJETA,
+                             border_width=1, border_color=COLOR_BORDE)
+        marco.grid(row=1, column=0, sticky="nsew")
+        self.marco_panel_prog = marco          # compat: es el panel de la clase
+        fila = ctk.CTkFrame(marco, fg_color="transparent")
+        fila.pack(fill="x", padx=14, pady=(10, 2))
+        ctk.CTkLabel(fila, text=icono, font=(tema.FUENTE_UI, 14),
+                     text_color=COLOR_ACENTO).pack(side="left")
+        ctk.CTkLabel(fila, text=titulo, font=(tema.FUENTE_UI, 14, "bold"),
+                     text_color=COLOR_TEXTO).pack(side="left", padx=(8, 0))
+        self.btn_prog_ventana = ctk.CTkButton(
+            fila, text="\u29C9  En ventana", width=118, height=30, corner_radius=RADIO_CHIP,
+            fg_color=COLOR_TARJETA_ALTA, hover_color=COLOR_HOVER, border_width=1,
+            border_color=COLOR_BORDE, text_color=COLOR_TEXTO, font=(tema.FUENTE_UI, 12),
+            command=lambda: self.abrir_zona_en_ventana("clase"))
+        self.btn_prog_ventana.pack(side="right")
+        self.btn_prog_copiar = ctk.CTkButton(
+            fila, text="\U0001F4CB", width=34, height=30, corner_radius=RADIO_CHIP,
+            state="disabled", fg_color=COLOR_TARJETA_ALTA, hover_color=COLOR_HOVER,
+            border_width=1, border_color=COLOR_BORDE, text_color=COLOR_TEXTO,
+            font=(tema.FUENTE_UI, 12), command=self._copiar_programacion)
+        self.btn_prog_copiar.pack(side="right")
+        self.btn_prog_guardar = ctk.CTkButton(
+            fila, text="\U0001F4BE  Guardar", width=118, height=30, corner_radius=RADIO_CHIP,
+            state="disabled", fg_color=COLOR_TARJETA_ALTA, hover_color=COLOR_HOVER,
+            border_width=1, border_color=COLOR_BORDE, text_color=COLOR_TEXTO,
+            font=(tema.FUENTE_UI, 12), command=self._guardar_programacion)
+        self.btn_prog_guardar.pack(side="right", padx=(0, 6))
+        self.lbl_prog_zona = ctk.CTkLabel(
+            marco, text="", font=(tema.FUENTE_UI, 10), text_color=COLOR_TEXTO_SUAVE,
+            anchor="w", justify="left", wraplength=560)
+        self.lbl_prog_zona.pack(fill="x", padx=14, pady=(0, 4))
+
+        self.scroll_prog = ctk.CTkScrollableFrame(marco, fg_color="transparent",
+                                                  height=80, **BARRA_SCROLL)
+        self.scroll_prog.pack(fill="both", expand=True, padx=6, pady=(2, 10))
+        # Las listas de siempre (compatibilidad): son las mismas de la zona «clase».
+        self._tarjetas_prog = []
+        self._marcos_prog = []
+        self._zonas_prog["clase"] = {
+            "tipo": "tarjetas", "marco": marco, "scroll": self.scroll_prog,
+            "tarjetas": self._tarjetas_prog, "marcos": self._marcos_prog,
+            "texto": "", "titulo": titulo, "icono": icono, "ayuda": ayuda,
+            "pestana": pestana, "lbl_estado": self.lbl_prog_zona,
+            "btn_copiar": self.btn_prog_copiar, "btn_guardar": self.btn_prog_guardar,
+            "ventana": None,
+        }
+        self._orden_zonas_prog.append("clase")
+        return marco
+
+    def _crear_zona_texto(self, parent, clave):
+        """Monta la zona de una tarea: su pestaña, sus tarjetas y sus botones."""
+        pestana, icono, titulo, ayuda = ZONAS_PROG[clave]
+        marco = ctk.CTkFrame(parent, fg_color=COLOR_TARJETA, corner_radius=RADIO_TARJETA,
+                             border_width=1, border_color=COLOR_BORDE)
+        marco.grid(row=1, column=0, sticky="nsew")
+        marco.grid_remove()             # nace escondida: se entra por su pestaña
+        fila = ctk.CTkFrame(marco, fg_color="transparent")
+        fila.pack(fill="x", padx=14, pady=(10, 2))
+        ctk.CTkLabel(fila, text=icono, font=(tema.FUENTE_UI, 14),
+                     text_color=COLOR_ACENTO).pack(side="left")
+        ctk.CTkLabel(fila, text=titulo, font=(tema.FUENTE_UI, 14, "bold"),
+                     text_color=COLOR_TEXTO).pack(side="left", padx=(8, 0))
+        btn_ventana = ctk.CTkButton(
+            fila, text="\u29C9  En ventana", width=118, height=30, corner_radius=RADIO_CHIP,
+            fg_color=COLOR_TARJETA_ALTA, hover_color=COLOR_HOVER, border_width=1,
+            border_color=COLOR_BORDE, text_color=COLOR_TEXTO, font=(tema.FUENTE_UI, 12),
+            command=lambda c=clave: self.abrir_zona_en_ventana(c))
+        btn_ventana.pack(side="right")
+        btn_copiar = ctk.CTkButton(
+            fila, text="\U0001F4CB", width=34, height=30, corner_radius=RADIO_CHIP,
+            state="disabled", fg_color=COLOR_TARJETA_ALTA, hover_color=COLOR_HOVER,
+            border_width=1, border_color=COLOR_BORDE, text_color=COLOR_TEXTO,
+            font=(tema.FUENTE_UI, 12), command=lambda c=clave: self.copiar_zona_programacion(c))
+        btn_copiar.pack(side="right")
+        btn_guardar = ctk.CTkButton(
+            fila, text="\U0001F4BE  Guardar", width=118, height=30, corner_radius=RADIO_CHIP,
+            state="disabled", fg_color=COLOR_TARJETA_ALTA, hover_color=COLOR_HOVER,
+            border_width=1, border_color=COLOR_BORDE, text_color=COLOR_TEXTO,
+            font=(tema.FUENTE_UI, 12), command=lambda c=clave: self.guardar_zona_programacion(c))
+        btn_guardar.pack(side="right", padx=(0, 6))
+        lbl_estado = ctk.CTkLabel(
+            marco, text=ayuda, font=(tema.FUENTE_UI, 10), text_color=COLOR_TEXTO_SUAVE,
+            anchor="w", justify="left", wraplength=560)
+        lbl_estado.pack(fill="x", padx=14, pady=(0, 4))
+        scroll = ctk.CTkScrollableFrame(marco, fg_color="transparent", height=80,
+                                        **BARRA_SCROLL)
+        scroll.pack(fill="both", expand=True, padx=6, pady=(2, 10))
+        self._zonas_prog[clave] = {
+            "tipo": "tarjetas", "marco": marco, "scroll": scroll,
+            "tarjetas": [], "marcos": [], "texto": "",
+            "titulo": titulo, "icono": icono, "ayuda": ayuda, "pestana": pestana,
+            "lbl_estado": lbl_estado, "btn_copiar": btn_copiar,
+            "btn_guardar": btn_guardar, "ventana": None,
+        }
+        self._orden_zonas_prog.append(clave)
+        self._refrescar_pestanas()
+        return marco
+
+    def _refrescar_pestanas(self):
+        """Redibuja las pestañas: primero la clase y el chat, luego las abiertas."""
+        for boton in self.pestanas_prog.winfo_children():
+            boton.destroy()
+        self.botones_prog_panel = {}
+        orden = [clave for clave in ("clase", "chat") if clave in self._zonas_prog]
+        orden += [clave for clave in self._orden_zonas_prog if clave not in orden]
+        self._orden_pestanas = orden
+        for clave in orden:
+            etiqueta = ZONAS_PROG.get(clave, (clave, "", clave, ""))[0]
+            boton = ctk.CTkButton(
+                self.pestanas_prog, text=etiqueta, width=104, height=30,
+                corner_radius=RADIO_CHIP, border_width=1,
+                font=(tema.FUENTE_UI, 11, "bold"),
+                command=lambda p=clave: self._cambiar_panel_programacion(p))
+            self.botones_prog_panel[clave] = boton
+        self._colocar_pestanas()
+        self._marcar_panel_programacion()
+
+    def _colocar_pestanas(self):
+        """Reparte las pestañas en filas según el ancho que tenga el centro.
+
+        Las pestañas crecen con cada tarea abierta: así caben sin que el centro se
+        estire ni se coma el sitio de la guía (la de la derecha).
+        """
+        botones = getattr(self, "botones_prog_panel", {})
+        if not botones:
+            return
+        ancho = self.pestanas_prog.winfo_width()
+        if ancho <= 1:
+            ancho = self._contenedor_prog.winfo_width() if self._contenedor_prog else 0
+        if ancho <= 1:
+            ancho = 480
+        columnas = max(2, min(5, int(ancho // 110)))
+        orden = [clave for clave in getattr(self, "_orden_pestanas", [])
+                 if clave in botones]
+        for indice, clave in enumerate(orden):
+            botones[clave].grid(row=indice // columnas, column=indice % columnas,
+                                sticky="ew", padx=(0, 6), pady=(0, 4))
+        for columna in range(5):
+            self.pestanas_prog.grid_columnconfigure(columna, weight=1 if columna < columnas else 0)
+        filas = max(1, (len(orden) + columnas - 1) // columnas)
+        alto = filas * 34
+        if int(self.pestanas_prog.cget("height")) != alto:
+            self.pestanas_prog.configure(height=alto)
+
+    def zonas_programacion(self):
+        """Las zonas abiertas del taller (clave -> sus datos), para la ventana."""
+        return self._zonas_prog
+
+    def _abrir_zona(self, clave):
+        """Asegura que la zona de esa tarea existe y la deja a la vista."""
+        if clave not in self._zonas_prog:
+            if clave not in ZONAS_PROG:
+                clave = "clase"
+            else:
+                self._crear_zona_texto(self._contenedor_prog, clave)
+        return self.mostrar_panel_programacion(clave)
+
+    def abrir_zona_en_ventana(self, clave):
+        """Abre (o trae al frente) la ventana aparte de una zona del taller.
+
+        Es la misma zona que su pestaña, con lo mismo dentro: sirve para tener dos
+        cosas a la vista a la vez (la lección y los ejercicios, por ejemplo). El
+        chat no abre ventana: ya tiene su sitio en la pestaña «Chat».
+        """
+        clave = clave if clave in ZONAS_PROG else "clase"
+        self._abrir_zona(clave)
+        zona = self._zonas_prog.get(clave) or {}
+        if zona.get("tipo") == "chat":
+            return None
+        ventana = zona.get("ventana")
+        if ventana is not None:
+            try:
+                if ventana.winfo_exists():
+                    ventana.deiconify()
+                    ventana.lift()
+                    ventana.focus_force()
+                    return ventana
+            except Exception:       # la ventana se cerró: se abre otra
+                pass
+        ventana = VentanaZonaProgramacion(self, clave, zona.get("texto") or "")
+        zona["ventana"] = ventana
+        return ventana
+
     # ---------------- El programa: dónde vive y cómo se enseña ----------------
     def codigo_programacion(self):
         """El programa del alumno, tal y como está en la ventana del editor."""
@@ -506,24 +731,49 @@ class VistaProgramacion(Vista):
     # El chat del taller: una conversación propia, aparte de la de Jarvis
     # ------------------------------------------------------------------
     def mostrar_panel_programacion(self, panel="clase"):
-        """Enseña una de las dos caras del centro: las tarjetas o el chat.
+        """Enseña una zona del centro (la que se pida; el chat también es una).
 
-        El chat del taller tiene su propio sitio: al abrirlo, la conversación de
-        Jarvis no se toca (ni al revés).
+        Cada tarea tiene la suya: al abrirla no se pisa lo que hubiera en las
+        demás, y el chat del taller sigue siendo una conversación aparte de la de
+        Jarvis (no se toca ni una ni otra).
         """
         pedido = str(panel or "").strip().lower()
-        self._panel_prog = "chat" if pedido.startswith(("chat", "\U0001F4AC")) else "clase"
-        for marco, suyo in ((self.marco_panel_prog, "clase"),
-                            (self.marco_chat_prog, "chat")):
-            if suyo == self._panel_prog:
+        if pedido.startswith(("chat", "\U0001F4AC")):
+            clave = "chat"
+        elif pedido.startswith(("clase", "\U0001F4DA")):
+            clave = "clase"
+        else:
+            clave = pedido
+        if clave not in self._zonas_prog:
+            if clave in ZONAS_PROG:
+                self._crear_zona_texto(self._contenedor_prog, clave)
+            else:
+                clave = "clase"
+        self._panel_prog = clave
+        for nombre, zona in self._zonas_prog.items():
+            marco = zona.get("marco")
+            if marco is None:
+                continue
+            if nombre == clave:
                 marco.grid()
             else:
                 marco.grid_remove()
+        # El chat del taller se queda con todo el centro mientras conversas: la
+        # revisión y la consola se apartan para no quitarle sitio (y vuelven al
+        # abrir cualquier otra zona).
+        for marco in (getattr(self, "marco_revision_prog", None),
+                      getattr(self, "marco_consola_prog", None)):
+            if marco is None:
+                continue
+            if clave == "chat":
+                marco.grid_remove()
+            else:
+                marco.grid()
         try:
             self._marcar_panel_programacion()
         except Exception:
             pass                    # las pestañas aún no están montadas (o ya no existen)
-        if self._panel_prog == "chat":
+        if clave == "chat":
             self.after(40, self._enfocar_chat_prog)
         return self._panel_prog
 
@@ -575,13 +825,15 @@ class VistaProgramacion(Vista):
                      font=(tema.FUENTE_UI, 10), text_color=COLOR_TEXTO_SUAVE,
                      anchor="w").pack(side="left", padx=(10, 0))
 
+        # La caja de escribir se reserva abajo ANTES que los mensajes: si la ventana
+        # se queda corta, se recorta la conversación (que ya tiene su barra), nunca
+        # la entrada, que es lo que hace falta para poder usar el chat.
         self.chat_prog_scroll = ctk.CTkScrollableFrame(marco, fg_color="transparent",
-                                                       **BARRA_SCROLL)
-        self.chat_prog_scroll.pack(fill="both", expand=True, padx=6, pady=(2, 6))
-
+                                                       height=80, **BARRA_SCROLL)
         caja = ctk.CTkFrame(marco, fg_color=COLOR_CODIGO, corner_radius=RADIO_CHIP,
                             border_width=1, border_color=COLOR_BORDE)
-        caja.pack(fill="x", padx=12, pady=(0, 12))
+        caja.pack(side="bottom", fill="x", padx=12, pady=(0, 12))
+        self.chat_prog_scroll.pack(fill="both", expand=True, padx=6, pady=(2, 6))
         self.txt_chat_prog = ctk.CTkTextbox(
             caja, height=52, wrap="word", fg_color="transparent", border_width=0,
             corner_radius=0, text_color=COLOR_TEXTO, font=(tema.FUENTE_UI, 13),
@@ -589,6 +841,7 @@ class VistaProgramacion(Vista):
             scrollbar_button_hover_color=COLOR_ACENTO)
         self.txt_chat_prog.pack(side="left", fill="both", expand=True, padx=(10, 6), pady=8)
         self.txt_chat_prog._textbox.configure(spacing1=2, spacing3=2, padx=0, pady=2)
+        rueda.acelerar_caja(self.txt_chat_prog)
         self.btn_chat_prog_enviar = ctk.CTkButton(
             caja, text="\u2191", width=34, height=34, corner_radius=17,
             fg_color=COLOR_ACENTO, hover_color=COLOR_ACENTO_HOVER,
@@ -950,31 +1203,89 @@ class VistaProgramacion(Vista):
         return ruta
 
     def corregir_programacion(self):
-        """Pasa el compilador de verdad y deja el resultado en las tarjetas."""
+        """Pasa el compilador de verdad y deja el resultado en su propia zona."""
         self._estado_programacion("Pasando el compilador…")
         datos = self._revisar_programacion(compilar=True, apuntar=True)
-        self._escribir_programacion(datos.get("texto") or "")
+        self._escribir_en_zona("revision", datos.get("texto") or "")
+        cabecera = self._avisos_de_revision(datos).splitlines()[0]
+        self._zona_estado("revision", cabecera,
+                          COLOR_OK if not datos.get("errores") else COLOR_AVISO)
         return datos
 
     def _escribir_programacion(self, texto):
-        """Enseña un texto en el taller (y lo deja listo para copiar o guardar).
+        """Enseña un texto en la zona que esté pidiendo el turno (la clase si no).
+
+        Lo de siempre (la corrección, la ayuda, una clase) va a la zona «clase»;
+        las tareas escriben en la suya con `_escribir_en_zona`, para que una no
+        pise a otra.
+        """
+        return self._escribir_en_zona(getattr(self, "_zona_destino", None) or "clase",
+                                      texto)
+
+    def _escribir_en_zona(self, clave, texto, mostrar=True):
+        """Escribe en la zona de una tarea: su pestaña y su ventana, si está abierta.
 
         El Markdown se trocea por sus títulos, igual que la clase de inglés: cada
         apartado es una tarjeta con su icono y los ejemplos van en monoespaciada.
         """
-        self._clase_prog = str(texto or "")
-        self._pintar_tarjetas(self.scroll_prog, self._clase_prog, self._tarjetas_prog,
-                              self._marcos_prog)
-        listos = "normal" if self._clase_prog else "disabled"
-        self.btn_prog_copiar.configure(state=listos)
-        self.btn_prog_guardar.configure(state=listos)
-        # Lo nuevo se enseña en su sitio: si estabas en el chat, se pasa a la clase.
-        self.mostrar_panel_programacion("clase")
+        if clave not in ZONAS_PROG:
+            clave = "clase"
+        if clave not in self._zonas_prog:
+            self._crear_zona_texto(self._contenedor_prog, clave)
+        zona = self._zonas_prog[clave]
+        if zona.get("tipo") == "chat":
+            return ""
+        texto = str(texto or "")
+        zona["texto"] = texto
+        if clave == "clase":
+            self._clase_prog = texto
+        self._pintar_tarjetas(zona["scroll"], texto, zona["tarjetas"], zona["marcos"])
+        listos = "normal" if texto else "disabled"
+        for boton in (zona.get("btn_copiar"), zona.get("btn_guardar")):
+            try:
+                boton.configure(state=listos)
+            except Exception:
+                pass
+        ventana = zona.get("ventana")
+        if ventana is not None:
+            try:
+                if ventana.winfo_exists():
+                    ventana.actualizar(texto)
+                else:
+                    zona["ventana"] = None
+            except Exception:
+                zona["ventana"] = None
+        if mostrar:
+            self.mostrar_panel_programacion(clave)
+        return texto
+
+    def _zona_estado(self, clave, texto, color=None):
+        """Dice en una zona (y en su ventana, si está abierta) qué está pasando."""
+        zona = self._zonas_prog.get(clave)
+        if not zona:
+            return
+        etiqueta = zona.get("lbl_estado")
+        if etiqueta is not None:
+            try:
+                etiqueta.configure(text=str(texto or ""),
+                                   text_color=color or COLOR_TEXTO_SUAVE)
+            except Exception:
+                pass
+        ventana = zona.get("ventana")
+        if ventana is not None:
+            try:
+                if ventana.winfo_exists():
+                    ventana.estado(texto, color)
+            except Exception:
+                zona["ventana"] = None
 
     def texto_programacion_visible(self):
-        """Lo que se está viendo en el taller, en texto plano (para las pruebas)."""
+        """Lo que se está viendo en la zona abierta, en texto plano (pruebas)."""
+        zona = self._zonas_prog.get(getattr(self, "_panel_prog", "clase"))
+        if not zona:
+            zona = self._zonas_prog.get("clase") or {}
         trozos = [f"{titulo}\n{area.get('1.0', 'end-1c').strip()}"
-                  for titulo, area in getattr(self, "_tarjetas_prog", [])]
+                  for titulo, area in zona.get("tarjetas") or []]
         return "\n\n".join(trozos).strip()
 
     def _estado_programacion(self, texto, color=None):
@@ -1112,7 +1423,7 @@ class VistaProgramacion(Vista):
 
     # ---------------- Las tareas del taller ----------------
     def _accion_programacion(self, tarea):
-        """Prepara una tarea del taller y la trae al panel (sin tocar el chat).
+        """Prepara una tarea del taller y la trae a su propia zona (sin tocar el chat).
 
         `ProgrammingTutor` devuelve siempre texto: o lo que ya tiene escrito en sus
         tablas —temario, lección, documentación, comparaciones y el avance—, que se
@@ -1129,13 +1440,17 @@ class VistaProgramacion(Vista):
         if tarea != TAREA_PROG_PELIGRO:
             self._prog_borrar_pendiente = False
 
+        zona = ZONA_DE_TAREA.get(tarea, "clase")
         if tarea == TAREA_PROG_PRINCIPAL:
             # Corregir de verdad: el analizador propio y, si hay JDK, el `javac`.
+            # El resultado va a su zona, para no pisar la lección ni el avance.
+            self._abrir_zona(zona)
             self.corregir_programacion()
             return
         if tarea == "probar":
             # Compilar y ejecutar tarda (hasta TIEMPO_EJECUTAR si el programa se
             # cuelga): va en un hilo para que la ventana siga respondiendo.
+            self._abrir_zona(zona)
             self.ejecutar_programacion()
             return
         if tarea == "preguntar":
@@ -1143,6 +1458,7 @@ class VistaProgramacion(Vista):
             # aparte de la de Jarvis, así que aquí solo se abre y se lleva la duda.
             self.preguntar_programacion()
             return
+        self._abrir_zona(zona)          # cada tarea, en su propia zona
         if tarea == "bases":
             resultado = tutor.bases()
         elif tarea == "leccion":
@@ -1173,36 +1489,46 @@ class VistaProgramacion(Vista):
         resultado = str(resultado or "")
         if not resultado.startswith(MARCA_PROFE):
             # Lo que ya está en sus tablas: se lee sin conexión y sin gastar IA.
-            self._escribir_programacion(resultado)
+            self._escribir_en_zona(zona, resultado)
+            self._zona_estado(zona, "Esto ya viene escrito en mis tablas: sin gastar IA.")
             self._estado_programacion("Esto ya viene escrito en mis tablas: sin gastar IA.")
             return
+        self._zona_estado(zona, "Escribiendo con la IA…")
         self._estado_programacion("Escribiendo con la IA…")
         threading.Thread(target=self._pedir_al_profe,
-                         args=(resultado[len(MARCA_PROFE):], ), daemon=True).start()
+                         args=(resultado[len(MARCA_PROFE):], zona), daemon=True).start()
 
-    def _pedir_al_profe(self, encargo):
-        """Pide al cerebro la explicación (hilo de trabajo) y la trae al taller."""
+    def _pedir_al_profe(self, encargo, zona="clase"):
+        """Pide al cerebro la explicación (hilo de trabajo) y la trae a su zona."""
         try:
             respuesta = self.app.brain.analizar_documento(encargo,
                                                       sistema=APIBrain.SISTEMA_PROGRAMADOR)
         except Exception as error:
             respuesta = ""
             print(f"No pude preparar la explicación de programación: {error}")
-        self.after(0, lambda: self._mostrar_programacion_ia(respuesta))
+        self.after(0, lambda: self._mostrar_programacion_ia(respuesta, zona))
 
-    def _mostrar_programacion_ia(self, respuesta):
-        """Pinta lo que ha contestado la IA (hilo de Tk)."""
+    def _mostrar_programacion_ia(self, respuesta, zona="clase"):
+        """Pinta lo que ha contestado la IA en su zona (hilo de Tk).
+
+        No se cambia de pestaña: si mientras la IA escribía te has ido a otra
+        zona, la respuesta espera en la suya (y en su ventana, si está abierta).
+        """
         if not respuesta:
-            self._escribir_programacion(
+            self._escribir_en_zona(
+                zona,
                 "No pude preparar la explicación con la IA: revisa tu API Key (DeepSeek) en "
                 "Ajustes y vuelve a pedírmela.\n\n"
                 "Lo demás sigue funcionando sin conexión: la revisión del código con su línea "
                 "y su columna, el temario, las lecciones, la documentación, las comparaciones "
-                "y tu avance.")
+                "y tu avance.", mostrar=False)
+            self._zona_estado(zona, "No hubo respuesta de la IA.", COLOR_AVISO)
             self._estado_programacion("No hubo respuesta de la IA.", COLOR_AVISO)
             return
-        self._escribir_programacion(respuesta)
-        self._estado_programacion(f"Listo ({datetime.now().strftime('%H:%M')}).")
+        self._escribir_en_zona(zona, respuesta, mostrar=False)
+        listo = f"Listo ({datetime.now().strftime('%H:%M')})."
+        self._zona_estado(zona, listo, COLOR_OK)
+        self._estado_programacion(listo, COLOR_OK)
 
     def ejecutar_programacion(self, al_terminar=None):
         """Compila y ejecuta el programa en un hilo (la ventana sigue respondiendo).
@@ -1244,10 +1570,13 @@ class VistaProgramacion(Vista):
         if datos.get("errores"):
             self._pintar_avisos(self._avisos_de_revision(datos))
         self._pintar_consola(datos)
-        self._escribir_programacion(datos.get("texto") or "El programa no dijo nada.")
+        self._escribir_en_zona("probar", datos.get("texto") or "El programa no dijo nada.",
+                               mostrar=False)
         if datos.get("ok"):
+            self._zona_estado("probar", "Salió bien: eso es lo que imprimió.", COLOR_OK)
             self._estado_programacion("El programa funcionó: mira lo que imprimió.", COLOR_OK)
         else:
+            self._zona_estado("probar", "Mira la consola: hay algo que arreglar.", COLOR_AVISO)
             self._estado_programacion("Mira la salida: hay algo que arreglar.", COLOR_AVISO)
         if hasattr(self, "btn_prog_ejecutar"):
             self.btn_prog_ejecutar.configure(state="normal")
@@ -1292,6 +1621,39 @@ class VistaProgramacion(Vista):
         """Vacía la consola del taller (el programa no se toca)."""
         limpiar_consola(self.txt_prog_consola)
         self._consola_estado("sin ejecutar")
+
+    # ---------------- Copiar y guardar lo de una zona ----------------
+    def copiar_zona_programacion(self, clave):
+        """Copia el texto de una zona al portapapeles (dice si había algo)."""
+        zona = self._zonas_prog.get(clave) or {}
+        texto = zona.get("texto") or ""
+        if not texto:
+            self._zona_estado(clave, "Todavía no hay nada que copiar.", COLOR_AVISO)
+            return False
+        self.clipboard_clear()
+        self.clipboard_append(texto)
+        self._zona_estado(clave, "Copiado al portapapeles.", COLOR_OK)
+        return True
+
+    def guardar_zona_programacion(self, clave):
+        """Guarda una zona como `.md` en documentos y devuelve la ruta (o "")."""
+        zona = self._zonas_prog.get(clave) or {}
+        texto = zona.get("texto") or ""
+        if not texto:
+            self._zona_estado(clave, "Todavía no hay nada que guardar.", COLOR_AVISO)
+            return ""
+        try:
+            os.makedirs(rutas.DOCUMENTOS, exist_ok=True)
+            nombre = (f"{zona.get('titulo') or 'Programación'} "
+                      f"{datetime.now().strftime('%Y-%m-%d %H-%M')}.md")
+            ruta = os.path.join(rutas.DOCUMENTOS, nombre)
+            with open(ruta, "w", encoding="utf-8") as archivo:
+                archivo.write(texto)
+        except OSError as error:
+            self._zona_estado(clave, f"No pude guardarlo: {error}", COLOR_AVISO)
+            return ""
+        self._zona_estado(clave, f"Guardado en {ruta}", COLOR_OK)
+        return ruta
 
     def _copiar_programacion(self):
         """Copia lo que se está viendo al portapapeles."""

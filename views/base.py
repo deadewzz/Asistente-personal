@@ -20,6 +20,7 @@ import customtkinter as ctk
 
 from modules import rutas
 from ui import tema
+from ui import scroll as rueda
 from ui.tema import (
     ATAJOS_CAJA, COLOR_ACENTO, COLOR_AVISO, COLOR_BORDE, COLOR_CODIGO,
     COLOR_CODIGO_TEXTO, COLOR_OK, COLOR_PELIGRO, COLOR_TARJETA, COLOR_TARJETA_ALTA,
@@ -60,6 +61,7 @@ def caja_consola(parent, alto=8, tam=11):
     caja.pack(side="left", fill="both", expand=True, padx=(4, 0), pady=4)
     for etiqueta, color in COLORES_CONSOLA.items():
         caja.tag_configure(etiqueta, foreground=color)
+    rueda.acelerar_caja(caja)       # la rueda avanza varias líneas de golpe
     return marco, caja
 
 
@@ -548,8 +550,9 @@ class Vista(ctk.CTkFrame):
         """
         def mover(evento):
             try:
-                marco_scroll._parent_canvas.yview_scroll(
-                    int(-1 * (evento.delta / 40)), "units")
+                paso = rueda.paso_de(evento)
+                if paso:
+                    marco_scroll._parent_canvas.yview_scroll(paso, "units")
             except Exception:
                 pass
             return "break"

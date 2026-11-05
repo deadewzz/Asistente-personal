@@ -16,8 +16,9 @@ import customtkinter as ctk
 from modules import rutas
 from modules.cloud_matrix import COLUMNAS_DEFECTO
 from ui import tema
+from ui import scroll as rueda
 from ui.tema import (
-    COLOR_ACENTO, COLOR_ACENTO_HOVER, COLOR_ACENTO_TEXTO, COLOR_BORDE,
+    BARRA_SCROLL, COLOR_ACENTO, COLOR_ACENTO_HOVER, COLOR_ACENTO_TEXTO, COLOR_BORDE,
     COLOR_CODIGO, COLOR_FONDO, COLOR_HOVER, COLOR_OK, COLOR_PANEL, COLOR_PELIGRO,
     COLOR_PELIGRO_HOVER, COLOR_TARJETA, COLOR_TARJETA_ALTA, COLOR_TEXTO,
     COLOR_TEXTO_SUAVE, RADIO_CHIP, RADIO_TARJETA, _mezclar,
@@ -51,11 +52,19 @@ class VistaAjustes(Vista):
         ctk.CTkLabel(cabecera, text="Voz y Ajustes", font=(tema.FUENTE_UI, 20, "bold"),
                      text_color=COLOR_TEXTO).pack(side="left")
 
+        # El resto del apartado va con barras de desplazamiento: la tarjeta de la
+        # voz y todos los ajustes no caben en cualquier alto de ventana, así que se
+        # llega a todo sin que se corte nada por abajo.
+        self.scroll_ajustes = ctk.CTkScrollableFrame(self, fg_color="transparent",
+                                                     height=220, **BARRA_SCROLL)
+        self.scroll_ajustes.pack(fill="both", expand=True, padx=(26, 12), pady=(0, 16))
+
         # La voz, en su tarjeta: a la izquierda cómo está y a la derecha el botón,
         # que es lo único que se pulsa aquí.
-        marco_voz = ctk.CTkFrame(self, fg_color=COLOR_TARJETA, corner_radius=RADIO_TARJETA,
+        marco_voz = ctk.CTkFrame(self.scroll_ajustes, fg_color=COLOR_TARJETA,
+                                 corner_radius=RADIO_TARJETA,
                                  border_width=1, border_color=COLOR_BORDE)
-        marco_voz.pack(fill="x", padx=30, pady=(0, 14))
+        marco_voz.pack(fill="x", padx=6, pady=(0, 14))
         ctk.CTkLabel(marco_voz, text="\U0001F3A4  Escucha por voz",
                      font=(tema.FUENTE_UI, 13, "bold"),
                      text_color=COLOR_TEXTO).pack(side="left", padx=(16, 10), pady=16)
@@ -70,10 +79,10 @@ class VistaAjustes(Vista):
         self.btn_toggle.pack(side="right", padx=16, pady=10)
 
         # Marco de ajustes: una tarjeta con sus apartados, cada uno con su icono.
-        self.frame_config = ctk.CTkFrame(self, fg_color=COLOR_TARJETA,
+        self.frame_config = ctk.CTkFrame(self.scroll_ajustes, fg_color=COLOR_TARJETA,
                                          corner_radius=RADIO_TARJETA,
                                          border_width=1, border_color=COLOR_BORDE)
-        self.frame_config.pack(fill="both", expand=True, padx=30, pady=(0, 26))
+        self.frame_config.pack(fill="x", padx=6, pady=(0, 18))
 
         # Lo primero: cómo te llamas. Jarvis no lo adivina de la sesión de Windows
         # (eso ponía «coutt»): lo aprende aquí y lo lleva en el mensaje de sistema,
@@ -199,6 +208,7 @@ class VistaAjustes(Vista):
                                          text_color=COLOR_TEXTO, undo=True, maxundo=200,
                                          font=(tema.FUENTE_UI, 12), wrap="word")
         self.txt_reglas.pack(padx=18, fill="x")
+        rueda.acelerar_caja(self.txt_reglas)
         # Las reglas también se escriben a mano: los mismos atajos que en el chat.
         self._atajos_caja(self.txt_reglas)
         self.btn_guardar_reglas = ctk.CTkButton(
